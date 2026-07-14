@@ -1,0 +1,27 @@
+name: Verify Aster
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: zsh {0}
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: swift test
+      - name: Build release configuration
+        run: swift build -c release
+      - name: Validate release scripts
+        run: |
+          zsh -n ReleaseTools/build-release.sh ReleaseTools/verify-release.sh
+          plutil -lint ReleaseTools/Aster.entitlements

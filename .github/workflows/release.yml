@@ -1,0 +1,137 @@
+name: Publish Aster Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version matching ReleaseNotes.json, such as 1.0.0-beta.1
+        required: true
+        type: string
+      build:
+        description: Increasing numeric build number
+        required: true
+        type: number
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: zsh {0}
+
+concurrency:
+  group: aster-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      VERSION: ${{ inputs.version }}
+      BUILD: ${{ inputs.build }}
+      FEED_URL: https://raw.githubusercontent.com/Sl0oth/Aster/main/releases/stable.json
+      PUBLIC_KEY: ${{ vars.ASTER_UPDATE_PUBLIC_KEY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify release secrets
+        env:
+          CERTIFICATE: ${{ secrets.ASTER_DEVELOPER_ID_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.ASTER_DEVELOPER_ID_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.ASTER_NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.ASTER_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.ASTER_NOTARY_ISSUER_ID }}
+          UPDATE_PRIVATE_KEY: ${{ secrets.ASTER_UPDATE_PRIVATE_KEY }}
+        run: |
+          for name in CERTIFICATE CERTIFICATE_PASSWORD NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER_ID UPDATE_PRIVATE_KEY PUBLIC_KEY; do
+            if [[ -z "${(P)name}" ]]; then
+              print -u2 "Missing required GitHub secret or variable: $name"
+              exit 1
+            fi
+          done
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE: ${{ secrets.ASTER_DEVELOPER_ID_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.ASTER_DEVELOPER_ID_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/aster-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          print -rn -- "$CERTIFICATE" | /usr/bin/base64 -D > "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)"
+          [[ -n "$SIGNING_IDENTITY" ]] || { print -u2 "The certificate is not a Developer ID Application certificate."; exit 1; }
+          print "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Configure Apple notarization
+        env:
+          NOTARY_KEY: ${{ secrets.ASTER_NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.ASTER_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.ASTER_NOTARY_ISSUER_ID }}
+        run: |
+          print -rn -- "$NOTARY_KEY" > "$RUNNER_TEMP/AuthKey.p8"
+          xcrun notarytool store-credentials Aster-CI \
+            --key "$RUNNER_TEMP/AuthKey.p8" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID"
+
+      - name: Test
+        run: swift test
+
+      - name: Build, sign, and notarize
+        env:
+          ASTER_VERSION: ${{ env.VERSION }}
+          ASTER_BUILD: ${{ env.BUILD }}
+          ASTER_UPDATE_FEED_URL: ${{ env.FEED_URL }}
+          ASTER_UPDATE_PUBLIC_KEY: ${{ env.PUBLIC_KEY }}
+          ASTER_CODESIGN_IDENTITY: ${{ env.SIGNING_IDENTITY }}
+          ASTER_NOTARY_PROFILE: Aster-CI
+        run: ReleaseTools/build-release.sh
+
+      - name: Create signed update feed
+        env:
+          ASTER_UPDATE_PRIVATE_KEY: ${{ secrets.ASTER_UPDATE_PRIVATE_KEY }}
+        run: |
+          DMG="dist/Aster-$VERSION.dmg"
+          HASH="$(shasum -a 256 "$DMG" | awk '{print $1}')"
+          DOWNLOAD_URL="https://github.com/Sl0oth/Aster/releases/download/v$VERSION/Aster-$VERSION.dmg"
+          jq --arg version "$VERSION" \
+             --argjson build "$BUILD" \
+             --arg date "$(date -u +%F)" \
+             --arg downloadURL "$DOWNLOAD_URL" \
+             --arg sha256 "$HASH" \
+             '{
+               version: $version,
+               build: $build,
+               headline: .headline,
+               summary: .summary,
+               releaseDate: $date,
+               downloadURL: $downloadURL,
+               sha256: $sha256,
+               minimumSystemVersion: "14.0",
+               features: .features
+             }' Sources/LumaWall/Resources/ReleaseNotes.json > "$RUNNER_TEMP/release.json"
+          mkdir -p releases
+          ReleaseTools/sign-update-feed.swift "$RUNNER_TEMP/release.json" releases/stable.json
+
+      - name: Publish GitHub release
+        run: |
+          jq -r '"## " + .headline + "\n\n" + .summary + "\n\n" + (.features | map("- **" + .title + "** — " + .description) | join("\n"))' \
+            Sources/LumaWall/Resources/ReleaseNotes.json > "$RUNNER_TEMP/release-notes.md"
+          gh release create "v$VERSION" "dist/Aster-$VERSION.dmg#Aster $VERSION" \
+            --title "Aster $VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Publish signed feed
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add releases/stable.json
+          git commit -m "Publish Aster $VERSION update feed"
+          git push origin HEAD:main

@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0-beta.1",
+  "headline": "Welcome to the Aster beta",
+  "summary": "A private, modular utility layer designed to make your Mac feel more like yours.",
+  "features": [
+    {
+      "id": "onboarding",
+      "title": "A thoughtful first run",
+      "description": "Aster introduces itself, explains its privacy promise, and lets everyone choose their starting modules.",
+      "symbol": "sparkles"
+    },
+    {
+      "id": "module-guides",
+      "title": "Help where it belongs",
+      "description": "Each module offers a concise guide the first time it is opened, including shortcuts and privacy details.",
+      "symbol": "lightbulb.fill"
+    },
+    {
+      "id": "asterisk",
+      "title": "A new Aster mark",
+      "description": "The six-arm asterisk now identifies Aster in the Dock and menu bar.",
+      "symbol": "asterisk"
+    },
+    {
+      "id": "updates",
+      "title": "Updates that explain themselves",
+      "description": "Aster can announce new releases, show exactly what changed, verify the download, and introduce new features after upgrading.",
+      "symbol": "arrow.down.circle.fill"
+    }
+  ]
+}
