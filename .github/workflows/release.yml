@@ -33,7 +33,7 @@ jobs:
       PUBLIC_KEY: ${{ vars.ASTER_UPDATE_PUBLIC_KEY }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Verify release secrets
         env:
