@@ -1703,19 +1703,27 @@ private extension View {
         interactive: Bool = false,
         tint: Color? = nil
     ) -> some View {
+        #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             glassEffect(
                 .regular.tint(tint).interactive(interactive),
                 in: .rect(cornerRadius: cornerRadius)
             )
         } else {
-            background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(.white.opacity(0.12), lineWidth: 0.7)
-                )
-                .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
+            asterLegacyGlass(cornerRadius: cornerRadius)
         }
+        #else
+        asterLegacyGlass(cornerRadius: cornerRadius)
+        #endif
+    }
+
+    func asterLegacyGlass(cornerRadius: CGFloat) -> some View {
+        background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(.white.opacity(0.12), lineWidth: 0.7)
+            )
+            .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
     }
 
     func glassPanel(cornerRadius: CGFloat = 19) -> some View {

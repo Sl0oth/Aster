@@ -507,19 +507,27 @@ private struct OnboardingSecondaryButtonStyle: ButtonStyle {
 private extension View {
     @ViewBuilder
     func onboardingGlass(cornerRadius: CGFloat, tint: Color? = nil) -> some View {
+        #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             glassEffect(
                 .regular.tint(tint).interactive(),
                 in: .rect(cornerRadius: cornerRadius)
             )
         } else {
-            background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(.white.opacity(0.12), lineWidth: 0.7)
-                )
-                .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
+            onboardingLegacyGlass(cornerRadius: cornerRadius)
         }
+        #else
+        onboardingLegacyGlass(cornerRadius: cornerRadius)
+        #endif
+    }
+
+    func onboardingLegacyGlass(cornerRadius: CGFloat) -> some View {
+        background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(.white.opacity(0.12), lineWidth: 0.7)
+            )
+            .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
     }
 }
 
