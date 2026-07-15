@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version matching ReleaseNotes.json, such as 1.0.0-beta.1
+        description: Version matching ReleaseNotes.json, such as 1.0.0-beta.2
         required: true
         type: string
       build:

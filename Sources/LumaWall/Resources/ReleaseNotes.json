@@ -1,49 +1,25 @@
 {
-  "version": "1.0.0-beta.1",
-  "headline": "Aster's first community beta",
-  "summary": "Canvas, Clips, Shelf, Bar, Switch, and Keys now work together as a private utility layer for your Mac.",
+  "version": "1.0.0-beta.2",
+  "headline": "A cleaner start for Shelf and Canvas",
+  "summary": "Shelf now starts with an empty widget layout, while Canvas helps you find your first wallpaper when its library is empty.",
   "features": [
     {
-      "id": "onboarding",
-      "title": "A thoughtful first run",
-      "description": "Aster introduces itself, explains its privacy promise, and lets everyone choose their starting modules.",
-      "symbol": "sparkles"
+      "id": "shelf-empty-start",
+      "title": "Start Shelf your way",
+      "description": "Fresh Shelf setups begin with no widgets selected. Widgets you choose afterward remain saved across launches.",
+      "symbol": "rectangle.grid.2x2"
     },
     {
-      "id": "module-guides",
-      "title": "Help where it belongs",
-      "description": "Each module offers a concise guide the first time it is opened, including shortcuts and privacy details.",
-      "symbol": "lightbulb.fill"
+      "id": "canvas-sources",
+      "title": "Find your first wallpaper",
+      "description": "An empty Canvas library now links to MotionBGs and MoeWalls alongside the local file picker.",
+      "symbol": "photo.on.rectangle.angled"
     },
     {
-      "id": "keys",
-      "title": "Shortcuts and app hotkeys",
-      "description": "Keys includes a Mac shortcut reference, shortcuts that can be edited or disabled, per-item restore, and global hotkeys that open or focus your apps.",
-      "symbol": "keyboard"
-    },
-    {
-      "id": "shelf-media",
-      "title": "System-wide Now Playing",
-      "description": "Shelf follows the active macOS media session from music apps, video players, and supported browser tabs, including artwork and playback controls.",
-      "symbol": "play.square.stack.fill"
-    },
-    {
-      "id": "background",
-      "title": "Built for the background",
-      "description": "Aster can hide its Dock icon without closing its windows, reopen from Bar, resume Canvas shuffle, and launch at login after installation.",
-      "symbol": "dock.rectangle"
-    },
-    {
-      "id": "canvas-shuffle",
-      "title": "A Canvas that keeps moving",
-      "description": "Timed shuffle supports still images, GIFs, and videos, remembers its state, and resumes after Aster reopens.",
-      "symbol": "shuffle"
-    },
-    {
-      "id": "updates",
-      "title": "Updates that explain themselves",
-      "description": "Aster can announce new releases, show exactly what changed, verify the download, and introduce new features after upgrading.",
-      "symbol": "arrow.down.circle.fill"
+      "id": "canvas-empty-search",
+      "title": "Clearer empty states",
+      "description": "Canvas now distinguishes an empty library from a search or filter with no matches.",
+      "symbol": "magnifyingglass"
     }
   ]
 }

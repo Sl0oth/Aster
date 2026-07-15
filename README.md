@@ -16,7 +16,7 @@
 Aster brings the small tools you use all day into one focused Mac app. Enable only the modules you want—there is no account, analytics, telemetry, advertising, or forced cloud connection.
 
 > [!NOTE]
-> Aster is preparing for its first public release. Until an installer is published, you can [build it from source](#build-from-source).
+> Aster is currently in public beta. Download the latest community build from [GitHub Releases](https://github.com/Sl0oth/Aster/releases/latest), or [build it from source](#build-from-source).
 
 ## See Aster in action
 
