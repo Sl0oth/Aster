@@ -1,0 +1,45 @@
+name: Verify Aster
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: zsh {0}
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run tests
+        run: swift test
+      - name: Build release configuration
+        run: swift build -c release
+      - name: Validate release scripts
+        run: |
+          zsh -n ReleaseTools/build-release.sh ReleaseTools/verify-release.sh
+          plutil -lint ReleaseTools/Aster.entitlements
+          test -s FIRST-LAUNCH.md
+      - name: Package community release
+        run: |
+          export ASTER_RELEASE_MODE=community
+          export ASTER_VERSION="$(jq -r '.version' Sources/LumaWall/Resources/ReleaseNotes.json)"
+          export ASTER_BUILD=1
+          export ASTER_UPDATE_FEED_URL="$(jq -r '.feedURL' Sources/LumaWall/Resources/ReleaseConfiguration.json)"
+          export ASTER_UPDATE_PUBLIC_KEY="$(jq -r '.publicKey' Sources/LumaWall/Resources/ReleaseConfiguration.json)"
+          ReleaseTools/build-release.sh
+          MOUNT="$RUNNER_TEMP/aster-dmg"
+          mkdir -p "$MOUNT"
+          trap 'hdiutil detach "$MOUNT" >/dev/null 2>&1 || true' EXIT
+          hdiutil attach "dist/Aster-$ASTER_VERSION.dmg" -nobrowse -readonly -mountpoint "$MOUNT" >/dev/null
+          test -d "$MOUNT/Aster.app"
+          cmp FIRST-LAUNCH.md "$MOUNT/First Launch Instructions.txt"
+          hdiutil detach "$MOUNT" >/dev/null
+          trap - EXIT
+          hdiutil verify "dist/Aster-$ASTER_VERSION.dmg" >/dev/null

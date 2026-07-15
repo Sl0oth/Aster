@@ -1,0 +1,1036 @@
+import AppKit
+import AVFoundation
+import Observation
+
+@MainActor
+@Observable
+final class WallpaperController {
+    enum CanvasDestination: String, CaseIterable, Identifiable {
+        case desktop = "Desktop"
+        case lockScreen = "Lock Screen"
+        case screenSaver = "Screen Saver"
+
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .desktop: "Desktop"
+            case .lockScreen: "Manual-Lock Still"
+            case .screenSaver: "Saver + Auto-Lock"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .desktop: "desktopcomputer"
+            case .lockScreen: "lock.display"
+            case .screenSaver: "sparkles.rectangle.stack"
+            }
+        }
+        var badge: String {
+            switch self {
+            case .desktop: "D"
+            case .lockScreen: "L"
+            case .screenSaver: "S"
+            }
+        }
+    }
+
+    enum FillMode: String, CaseIterable, Identifiable {
+        case fill = "Fill"
+        case fit = "Fit"
+        case stretch = "Stretch"
+        var id: String { rawValue }
+    }
+
+    enum ShuffleRate: Int, CaseIterable, Identifiable {
+        case thirtySeconds = 30
+        case oneMinute = 60
+        case fiveMinutes = 300
+        case fifteenMinutes = 900
+        case thirtyMinutes = 1_800
+        case oneHour = 3_600
+
+        var id: Int { rawValue }
+        var label: String {
+            switch self {
+            case .thirtySeconds: "30 seconds"
+            case .oneMinute: "1 minute"
+            case .fiveMinutes: "5 minutes"
+            case .fifteenMinutes: "15 minutes"
+            case .thirtyMinutes: "30 minutes"
+            case .oneHour: "1 hour"
+            }
+        }
+    }
+
+    var isEnabled: Bool {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            defaults.set(isEnabled, forKey: enabledKey)
+            if isEnabled {
+                statusMessage = "Canvas is ready"
+            } else {
+                stopShuffle(message: "Canvas is off")
+                stopAnimatedWallpaper()
+            }
+        }
+    }
+    private(set) var activeItemID: UUID?
+    private(set) var isAnimating = false
+    private(set) var isApplying = false
+    private(set) var statusMessage = "Choose a wallpaper to begin"
+    private(set) var screenSaverIsInstalled = false
+    private(set) var screenSaverIsConfigured = false
+    private(set) var screenSaverStatusMessage = "Auto-lock uses Screen Saver; manual lock uses the Lock Screen still"
+    private(set) var lockScreenItemID: UUID?
+    private(set) var screenSaverItemID: UUID?
+    var editingDestination: CanvasDestination = .desktop {
+        didSet { defaults.set(editingDestination.rawValue, forKey: destinationKey) }
+    }
+    var fillMode: FillMode = .fill {
+        didSet {
+            guard fillMode != oldValue else { return }
+            defaults.set(fillMode.rawValue, forKey: fillModeKey)
+            updateActiveWallpaperScaling()
+        }
+    }
+    var muted = true {
+        didSet {
+            videoWindows.forEach { $0.player.isMuted = muted }
+        }
+    }
+    var autoResumeMotionWallpaper: Bool = true {
+        didSet {
+            defaults.set(autoResumeMotionWallpaper, forKey: autoResumeKey)
+        }
+    }
+    var shuffleRate: ShuffleRate = .fiveMinutes {
+        didSet {
+            guard shuffleRate != oldValue else { return }
+            defaults.set(shuffleRate.rawValue, forKey: shuffleRateKey)
+            restartShuffleTask()
+        }
+    }
+    private(set) var shuffleItemIDs: Set<UUID> = []
+    private(set) var isShuffling = false
+    private(set) var shouldResumeShuffle = false
+    var launchAtLogin = false
+    private(set) var launchAtLoginStatusMessage = "Aster will stay available after you sign in."
+
+    private var videoWindows: [DesktopVideoWindow] = []
+    private var retiringVideoWindows: [DesktopVideoWindow] = []
+    private var desktopInteractionWindows: [DesktopInteractionWindow] = []
+    private var screenObserver: NSObjectProtocol?
+    private var desktopInteractionScreenObserver: NSObjectProtocol?
+    private var applicationObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var playbackActivity: NSObjectProtocol?
+    private var playbackRecoveryTask: Task<Void, Never>?
+    private var shuffleTask: Task<Void, Never>?
+    private weak var shuffleLibrary: WallpaperLibrary?
+    private var shuffleQueue: [UUID] = []
+    private var isRecoveringPlayback = false
+    private var didAttemptRestore = false
+    private var activeItemURL: URL?
+    private var activeItemKind: WallpaperItem.Kind?
+    private let defaults: UserDefaults
+    private let enabledKey = "Aster.Canvas.enabled"
+    private let autoResumeKey = "Aster.Canvas.autoResumeMotion"
+    private let fillModeKey = "Aster.Canvas.fillMode"
+    private let lastAppliedKey = "Aster.Canvas.lastAppliedWallpaper"
+    private let lastMotionAppliedKey = "Aster.Canvas.lastMotionWallpaper"
+    private let screenSaverConfiguredKey = "Aster.Canvas.screenSaverConfigured"
+    private let lockScreenItemKey = "Aster.Canvas.lockScreenWallpaper"
+    private let screenSaverItemKey = "Aster.Canvas.screenSaverWallpaper"
+    private let destinationKey = "Aster.Canvas.editingDestination"
+    private let shuffleRateKey = "Aster.Canvas.shuffleRate"
+    private let shuffleItemsKey = "Aster.Canvas.shuffleItems"
+    private let shuffleRunningKey = "Aster.Canvas.shuffleRunning"
+    private let shuffleNextDateKey = "Aster.Canvas.shuffleNextDate"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        isEnabled = defaults.object(forKey: enabledKey) as? Bool ?? true
+        refreshLaunchAtLoginStatus()
+        autoResumeMotionWallpaper = defaults.object(forKey: autoResumeKey) as? Bool ?? true
+        screenSaverIsInstalled = ScreenSaverInstaller.isInstalled
+        screenSaverIsConfigured = defaults.bool(forKey: screenSaverConfiguredKey)
+            && screenSaverIsInstalled
+        if screenSaverIsConfigured {
+            screenSaverStatusMessage = "Screen Saver also continues through automatic lock"
+        }
+        if screenSaverIsInstalled {
+            do {
+                try ScreenSaverInstaller.refreshInstallationIfNeeded()
+            } catch {
+                screenSaverStatusMessage = error.localizedDescription
+            }
+        }
+        lockScreenItemID = storedUUID(forKey: lockScreenItemKey)
+        screenSaverItemID = storedUUID(forKey: screenSaverItemKey)
+        if let storedDestination = defaults.string(forKey: destinationKey),
+           let destination = CanvasDestination(rawValue: storedDestination) {
+            editingDestination = destination
+        }
+        if screenSaverIsConfigured,
+           lockScreenItemID == nil,
+           screenSaverItemID == nil,
+           let legacyID = storedUUID(forKey: lastAppliedKey) {
+            lockScreenItemID = legacyID
+            screenSaverItemID = legacyID
+        }
+        if let storedFillMode = defaults.string(forKey: fillModeKey),
+           let restoredFillMode = FillMode(rawValue: storedFillMode) {
+            fillMode = restoredFillMode
+        }
+        if let storedShuffleRate = ShuffleRate(
+            rawValue: defaults.integer(forKey: shuffleRateKey)
+        ) {
+            shuffleRate = storedShuffleRate
+        }
+        shuffleItemIDs = Set(
+            (defaults.stringArray(forKey: shuffleItemsKey) ?? [])
+                .compactMap(UUID.init(uuidString:))
+        )
+        shouldResumeShuffle = defaults.bool(forKey: shuffleRunningKey)
+    }
+
+    func apply(_ item: WallpaperItem, url: URL) {
+        guard isEnabled, !isApplying else { return }
+        isApplying = true
+        statusMessage = "Applying…"
+        stopAnimatedWallpaper()
+        do {
+            switch item.kind {
+            case .image:
+                try applyImage(url)
+                installDesktopInteractionWindowsIfNeeded()
+                statusMessage = "Applied to \(NSScreen.screens.count) display\(NSScreen.screens.count == 1 ? "" : "s")"
+            case .video:
+                applyVideo(url)
+                statusMessage = "Motion wallpaper is playing"
+                defaults.set(item.id.uuidString, forKey: lastMotionAppliedKey)
+            }
+            activeItemID = item.id
+            activeItemURL = url
+            activeItemKind = item.kind
+            defaults.set(item.id.uuidString, forKey: lastAppliedKey)
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(650))
+            self?.isApplying = false
+        }
+    }
+
+    func assign(_ item: WallpaperItem, url: URL) {
+        guard isEnabled else { return }
+        switch editingDestination {
+        case .desktop:
+            apply(item, url: url)
+        case .lockScreen:
+            configureLockScreen(item, url: url)
+        case .screenSaver:
+            configureScreenSaver(item, url: url)
+        }
+    }
+
+    func assignedItemID(for destination: CanvasDestination) -> UUID? {
+        switch destination {
+        case .desktop: activeItemID ?? storedUUID(forKey: lastAppliedKey)
+        case .lockScreen: lockScreenItemID
+        case .screenSaver: screenSaverItemID
+        }
+    }
+
+    func isSelectedForShuffle(_ item: WallpaperItem) -> Bool {
+        shuffleItemIDs.contains(item.id)
+    }
+
+    func toggleShuffleSelection(_ item: WallpaperItem) {
+        guard isEnabled, item.canShuffle else { return }
+        if shuffleItemIDs.contains(item.id) {
+            shuffleItemIDs.remove(item.id)
+            shuffleQueue.removeAll { $0 == item.id }
+        } else {
+            shuffleItemIDs.insert(item.id)
+        }
+        persistShuffleSelection()
+        if isShuffling, shuffleItemIDs.count < 2 {
+            stopShuffle(message: "Select at least two wallpapers to shuffle")
+        }
+    }
+
+    func shuffleSelectionCount(in library: WallpaperLibrary) -> Int {
+        library.items.count { $0.canShuffle && shuffleItemIDs.contains($0.id) }
+    }
+
+    func validateShuffleSelection(in library: WallpaperLibrary) {
+        let validIDs = Set(library.items.lazy.filter(\.canShuffle).map(\.id))
+        let validated = shuffleItemIDs.intersection(validIDs)
+        guard validated != shuffleItemIDs else { return }
+        shuffleItemIDs = validated
+        shuffleQueue.removeAll { !validated.contains($0) }
+        persistShuffleSelection()
+        if isShuffling, validated.count < 2 {
+            stopShuffle(message: "Select at least two wallpapers to shuffle")
+        }
+    }
+
+    func startShuffle(in library: WallpaperLibrary) {
+        guard isEnabled else { return }
+        validateShuffleSelection(in: library)
+        guard shuffleSelectionCount(in: library) >= 2 else {
+            statusMessage = "Select at least two wallpapers to shuffle"
+            return
+        }
+        shuffleLibrary = library
+        shuffleQueue.removeAll()
+        isShuffling = true
+        setShuffleRunningPreference(true)
+        advanceShuffle(in: library)
+        restartShuffleTask()
+    }
+
+    func stopShuffle() {
+        stopShuffle(message: "Wallpaper shuffle stopped")
+    }
+
+    func restoreShuffleIfNeeded(in library: WallpaperLibrary) {
+        guard isEnabled, shouldResumeShuffle, !isShuffling else { return }
+        validateShuffleSelection(in: library)
+        guard shuffleSelectionCount(in: library) >= 2 else {
+            stopShuffle(message: "Shuffle couldn’t resume — select at least two wallpapers")
+            return
+        }
+
+        shuffleLibrary = library
+        shuffleQueue.removeAll()
+        isShuffling = true
+        statusMessage = "Wallpaper shuffle resumed"
+
+        if let nextDate = defaults.object(forKey: shuffleNextDateKey) as? Date,
+           nextDate > Date() {
+            restoreCurrentShuffleVideoIfNeeded(from: library)
+            let remainingSeconds = max(1, Int(ceil(nextDate.timeIntervalSinceNow)))
+            scheduleShuffle(after: remainingSeconds, updatesNextDate: false)
+        } else {
+            advanceShuffle(in: library)
+            restartShuffleTask()
+        }
+    }
+
+    func restoreMotionWallpaperIfNeeded(from library: WallpaperLibrary) {
+        guard isEnabled, autoResumeMotionWallpaper, !didAttemptRestore, !isAnimating else { return }
+
+        let storedID = defaults.string(forKey: lastMotionAppliedKey)
+            ?? defaults.string(forKey: lastAppliedKey)
+        guard let storedID,
+              let id = UUID(uuidString: storedID),
+              let item = library.items.first(where: { $0.id == id && $0.kind == .video }) else {
+            statusMessage = "The previous motion wallpaper is no longer in Canvas"
+            return
+        }
+
+        didAttemptRestore = true
+        library.selectedID = item.id
+        apply(item, url: library.url(for: item))
+    }
+
+    func stopAnimatedWallpaper() {
+        if let screenObserver {
+            NotificationCenter.default.removeObserver(screenObserver)
+            self.screenObserver = nil
+        }
+        if let desktopInteractionScreenObserver {
+            NotificationCenter.default.removeObserver(desktopInteractionScreenObserver)
+            self.desktopInteractionScreenObserver = nil
+        }
+        applicationObservers.forEach(NotificationCenter.default.removeObserver)
+        applicationObservers.removeAll()
+        workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
+        workspaceObservers.removeAll()
+        playbackRecoveryTask?.cancel()
+        playbackRecoveryTask = nil
+        isRecoveringPlayback = false
+        retireCurrentVideoWindows()
+        desktopInteractionWindows.forEach { $0.close() }
+        desktopInteractionWindows.removeAll()
+        if let playbackActivity {
+            ProcessInfo.processInfo.endActivity(playbackActivity)
+            self.playbackActivity = nil
+        }
+        isAnimating = false
+    }
+
+    private func installDesktopInteractionWindowsIfNeeded() {
+        guard DesktopInteractionSupport.needsAsterHitTarget else { return }
+        rebuildDesktopInteractionWindows()
+        desktopInteractionScreenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.rebuildDesktopInteractionWindows() }
+        }
+    }
+
+    private func rebuildDesktopInteractionWindows() {
+        desktopInteractionWindows.forEach { $0.close() }
+        desktopInteractionWindows = NSScreen.screens.map(DesktopInteractionWindow.init)
+    }
+
+    private func advanceShuffle(in library: WallpaperLibrary) {
+        let eligibleItems = library.items.filter {
+            $0.canShuffle && shuffleItemIDs.contains($0.id)
+        }
+        guard eligibleItems.count >= 2 else {
+            stopShuffle(message: "Select at least two wallpapers to shuffle")
+            return
+        }
+
+        let eligibleIDs = Set(eligibleItems.map(\.id))
+        shuffleQueue.removeAll { !eligibleIDs.contains($0) || $0 == activeItemID }
+        if shuffleQueue.isEmpty {
+            shuffleQueue = eligibleItems.map(\.id).filter { $0 != activeItemID }.shuffled()
+        }
+        guard let nextID = shuffleQueue.first,
+              let nextItem = eligibleItems.first(where: { $0.id == nextID }) else { return }
+        shuffleQueue.removeFirst()
+        library.selectedID = nextItem.id
+        apply(nextItem, url: library.url(for: nextItem))
+    }
+
+    private func restartShuffleTask() {
+        scheduleShuffle(after: shuffleRate.rawValue, updatesNextDate: true)
+    }
+
+    private func scheduleShuffle(after delay: Int, updatesNextDate: Bool) {
+        shuffleTask?.cancel()
+        shuffleTask = nil
+        guard isShuffling, let library = shuffleLibrary else { return }
+        if updatesNextDate {
+            defaults.set(Date().addingTimeInterval(TimeInterval(delay)), forKey: shuffleNextDateKey)
+        }
+        shuffleTask = Task { @MainActor [weak self, weak library] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self, let library else { return }
+            self.advanceShuffle(in: library)
+            self.restartShuffleTask()
+        }
+    }
+
+    private func stopShuffle(message: String) {
+        shuffleTask?.cancel()
+        shuffleTask = nil
+        shuffleLibrary = nil
+        shuffleQueue.removeAll()
+        isShuffling = false
+        setShuffleRunningPreference(false)
+        statusMessage = message
+    }
+
+    private func setShuffleRunningPreference(_ isRunning: Bool) {
+        shouldResumeShuffle = isRunning
+        defaults.set(isRunning, forKey: shuffleRunningKey)
+        if !isRunning { defaults.removeObject(forKey: shuffleNextDateKey) }
+    }
+
+    private func restoreCurrentShuffleVideoIfNeeded(from library: WallpaperLibrary) {
+        guard let storedID = defaults.string(forKey: lastAppliedKey),
+              let id = UUID(uuidString: storedID),
+              let item = library.items.first(where: { $0.id == id && $0.kind == .video }) else {
+            return
+        }
+        library.selectedID = item.id
+        apply(item, url: library.url(for: item))
+    }
+
+    private func persistShuffleSelection() {
+        defaults.set(
+            shuffleItemIDs.map(\.uuidString).sorted(),
+            forKey: shuffleItemsKey
+        )
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            let newStatus = try AsterLoginItemManager.setEnabled(enabled)
+            applyLoginItemStatus(newStatus)
+            if newStatus == .requiresApproval {
+                AsterLoginItemManager.openApprovalSettings()
+            }
+        } catch {
+            refreshLaunchAtLoginStatus()
+            launchAtLoginStatusMessage = "Launch at login couldn’t be changed: \(error.localizedDescription)"
+        }
+    }
+
+    func refreshLaunchAtLoginStatus() {
+        applyLoginItemStatus(AsterLoginItemManager.status)
+    }
+
+    private func applyLoginItemStatus(_ loginStatus: AsterLoginItemManager.Status) {
+        switch loginStatus {
+        case .disabled:
+            launchAtLogin = false
+            launchAtLoginStatusMessage = "Aster won’t open automatically when you sign in."
+        case .enabled:
+            launchAtLogin = true
+            launchAtLoginStatusMessage = "Aster will open automatically when you sign in."
+        case .requiresApproval:
+            launchAtLogin = true
+            launchAtLoginStatusMessage = "Allow Aster under System Settings → General → Login Items."
+        }
+    }
+
+    func configureScreenSaver(_ item: WallpaperItem, url: URL) {
+        guard isEnabled else { return }
+        configureScreenSaverSurface(item, url: url)
+    }
+
+    func configureLockScreen(_ item: WallpaperItem, url: URL) {
+        guard isEnabled else { return }
+        guard item.canUseAsLockScreenStill else {
+            screenSaverStatusMessage = "Manual Lock Screen supports still images only"
+            return
+        }
+        do {
+            // macOS uses this system-owned desktop layer for manual lock, lid close,
+            // and wake. An already-running Aster saver remains visible on auto-lock.
+            try applyImage(url)
+            lockScreenItemID = item.id
+            defaults.set(item.id.uuidString, forKey: lockScreenItemKey)
+            screenSaverStatusMessage = "Manual Lock Screen still set to \(item.name)"
+        } catch {
+            screenSaverStatusMessage = error.localizedDescription
+        }
+    }
+
+    func validateAssignments(in library: WallpaperLibrary) {
+        guard let lockScreenItemID else { return }
+        guard let item = library.items.first(where: { $0.id == lockScreenItemID }),
+              item.canUseAsLockScreenStill else {
+            self.lockScreenItemID = nil
+            defaults.removeObject(forKey: lockScreenItemKey)
+            screenSaverStatusMessage = "Choose a still image for manual Lock Screen"
+            return
+        }
+    }
+
+    private func configureScreenSaverSurface(_ item: WallpaperItem, url: URL) {
+        let wasInstalled = screenSaverIsInstalled
+        do {
+            // Keep both manifest fields identical for compatibility with saver bundles
+            // installed by earlier Aster builds. The runtime intentionally keeps showing
+            // the Screen Saver media if that same session transitions into auto-lock.
+            try ScreenSaverInstaller.configure(
+                destinations: [.screenSaver, .lockScreen],
+                mediaURL: url,
+                mediaKind: item.kind,
+                fillMode: fillMode,
+                muted: muted
+            )
+            screenSaverIsInstalled = true
+            screenSaverIsConfigured = true
+            defaults.set(true, forKey: screenSaverConfiguredKey)
+            screenSaverItemID = item.id
+            defaults.set(item.id.uuidString, forKey: screenSaverItemKey)
+            screenSaverStatusMessage = "Screen Saver and automatic lock set to \(item.name)"
+            if !wasInstalled { ScreenSaverInstaller.openSystemSettings() }
+        } catch {
+            screenSaverStatusMessage = error.localizedDescription
+        }
+    }
+
+    func openScreenSaverSettings() {
+        ScreenSaverInstaller.openSystemSettings()
+    }
+
+    private func applyImage(_ url: URL) throws {
+        var options: [NSWorkspace.DesktopImageOptionKey: Any] = [
+            .allowClipping: fillMode != .fit,
+            .fillColor: NSColor.black
+        ]
+        options[.imageScaling] = scalingValue
+        for screen in NSScreen.screens {
+            try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: options)
+        }
+    }
+
+    private var scalingValue: NSNumber {
+        let scaling: NSImageScaling = switch fillMode {
+        case .fill, .fit: .scaleProportionallyUpOrDown
+        case .stretch: .scaleAxesIndependently
+        }
+        return NSNumber(value: scaling.rawValue)
+    }
+
+    private func updateActiveWallpaperScaling() {
+        if isAnimating {
+            videoWindows.forEach { $0.setFillMode(fillMode) }
+            statusMessage = "Motion wallpaper set to \(fillMode.rawValue.lowercased())"
+            return
+        }
+
+        guard activeItemKind == .image, let activeItemURL else { return }
+        do {
+            try applyImage(activeItemURL)
+            statusMessage = "Wallpaper set to \(fillMode.rawValue.lowercased())"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func applyVideo(_ url: URL) {
+        playbackActivity = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Playing a motion wallpaper"
+        )
+        rebuildVideoWindows(url: url)
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.rebuildVideoWindows(url: url) }
+        }
+        observePlaybackLifecycle(url: url)
+        isAnimating = true
+    }
+
+    private func rebuildVideoWindows(url: URL) {
+        retireCurrentVideoWindows()
+        videoWindows = NSScreen.screens.map {
+            DesktopVideoWindow(
+                screen: $0,
+                url: url,
+                fillMode: fillMode,
+                muted: muted
+            ) { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.recoverMotionWallpaper(url: url)
+                }
+            }
+        }
+    }
+
+    private func observePlaybackLifecycle(url: URL) {
+        let resumeNames: [Notification.Name] = [
+            NSApplication.didBecomeActiveNotification,
+            NSApplication.didUnhideNotification
+        ]
+        applicationObservers = resumeNames.map { name in
+            NotificationCenter.default.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.resumeMotionWallpaper(url: url)
+                }
+            }
+        }
+
+        let workspaceNames: [Notification.Name] = [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification,
+            NSWorkspace.activeSpaceDidChangeNotification
+        ]
+        workspaceObservers = workspaceNames.map { name in
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.resumeMotionWallpaper(url: url)
+                }
+            }
+        }
+    }
+
+    private func resumeMotionWallpaper(url: URL) {
+        guard isAnimating else { return }
+        guard !videoWindows.isEmpty else {
+            recoverMotionWallpaper(url: url)
+            return
+        }
+        videoWindows.forEach { $0.ensureVisibleAndPlaying() }
+    }
+
+    private func recoverMotionWallpaper(url: URL) {
+        guard isAnimating, !isRecoveringPlayback else { return }
+        isRecoveringPlayback = true
+        statusMessage = "Recovering motion wallpaper…"
+        rebuildVideoWindows(url: url)
+        statusMessage = "Motion wallpaper is playing"
+
+        playbackRecoveryTask?.cancel()
+        playbackRecoveryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self?.isRecoveringPlayback = false
+        }
+    }
+
+    private func retireCurrentVideoWindows() {
+        guard !videoWindows.isEmpty else { return }
+        let retiring = videoWindows
+        let retiringIDs = Set(retiring.map(\.id))
+        videoWindows.removeAll()
+        retiring.forEach { $0.beginRetirement() }
+        retiringVideoWindows.append(contentsOf: retiring)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.retiringVideoWindows.removeAll { retiringIDs.contains($0.id) }
+        }
+    }
+
+    private func storedUUID(forKey key: String) -> UUID? {
+        defaults.string(forKey: key).flatMap(UUID.init(uuidString:))
+    }
+}
+
+@MainActor
+private final class DesktopVideoWindow: Identifiable {
+    let id = UUID()
+    let player: AVQueuePlayer
+    private let looper: AVPlayerLooper
+    private let asset: AVURLAsset
+    private let window: NSWindow
+    private let videoView: VideoDesktopView
+    private let onPlaybackFailure: () -> Void
+    private var stallObserver: NSObjectProtocol?
+    private var failureObserver: NSObjectProtocol?
+    private var boundaryObserver: Any?
+    private var watchdog: Timer?
+    private var lastPlaybackTime = -1.0
+    private var stagnantChecks = 0
+    private var unreadyChecks = 0
+    private var restartAttempts = 0
+    private var failureReported = false
+    private var isRetiring = false
+
+    init(
+        screen: NSScreen,
+        url: URL,
+        fillMode: WallpaperController.FillMode,
+        muted: Bool,
+        onPlaybackFailure: @escaping () -> Void
+    ) {
+        self.onPlaybackFailure = onPlaybackFailure
+        asset = AVURLAsset(url: url)
+        let templateItem = AVPlayerItem(asset: asset)
+        player = AVQueuePlayer()
+        player.actionAtItemEnd = .advance
+        player.automaticallyWaitsToMinimizeStalling = false
+        player.isMuted = muted
+        looper = AVPlayerLooper(player: player, templateItem: templateItem)
+
+        videoView = VideoDesktopView(
+            frame: screen.frame,
+            handlesDesktopClicks: DesktopInteractionSupport.needsAsterHitTarget
+        )
+        videoView.playerLayer.player = player
+        videoView.playerLayer.videoGravity = switch fillMode {
+        case .fill: .resizeAspectFill
+        case .fit: .resizeAspect
+        case .stretch: .resize
+        }
+
+        window = NSWindow(
+            contentRect: screen.frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.contentView = videoView
+        // One level above the system wallpaper, while remaining below Finder's desktop icons.
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.ignoresMouseEvents = !DesktopInteractionSupport.needsAsterHitTarget
+        window.isOpaque = true
+        window.backgroundColor = .black
+        window.animationBehavior = .none
+        window.setFrame(screen.frame, display: true)
+        window.orderBack(nil)
+
+        // A looper queues the next copy before the current one ends. The stall
+        // observer handles uncommon decoder interruptions without leaving the
+        // final decoded frame frozen on the desktop.
+        stallObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let itemID = (notification.object as? AVPlayerItem).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let self,
+                      !self.isRetiring,
+                      self.owns(itemID) else { return }
+                self.player.play()
+            }
+        }
+        failureObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let itemID = (notification.object as? AVPlayerItem).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let self,
+                      self.owns(itemID) else { return }
+                self.reportPlaybackFailure()
+            }
+        }
+
+        Task { @MainActor [weak self] in
+            await self?.installEndGuard()
+        }
+        let watchdog = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.verifyPlaybackIsAdvancing()
+            }
+        }
+        self.watchdog = watchdog
+        RunLoop.main.add(watchdog, forMode: .common)
+        player.play()
+    }
+
+    private func installEndGuard() async {
+        guard let duration = try? await asset.load(.duration),
+              !isRetiring,
+              duration.isNumeric,
+              duration.seconds > 0.25 else { return }
+
+        // Some H.264 files reach their final decoded frame without AVPlayerLooper
+        // advancing. Restart just before that terminal timestamp so the decoder
+        // never enters the frozen state.
+        let restartTime = CMTime(
+            seconds: max(duration.seconds - 0.08, 0),
+            preferredTimescale: 600
+        )
+        boundaryObserver = player.addBoundaryTimeObserver(
+            forTimes: [NSValue(time: restartTime)],
+            queue: .main
+        ) { [weak self] in
+            Task { @MainActor [weak self] in self?.restartPlayback() }
+        }
+    }
+
+    private func verifyPlaybackIsAdvancing() {
+        guard !isRetiring else { return }
+        if !window.isVisible {
+            window.orderBack(nil)
+        }
+
+        guard let currentItem = player.currentItem else {
+            markPlayerUnready()
+            return
+        }
+        switch currentItem.status {
+        case .readyToPlay:
+            unreadyChecks = 0
+        case .failed:
+            reportPlaybackFailure()
+            return
+        case .unknown:
+            markPlayerUnready()
+            return
+        @unknown default:
+            markPlayerUnready()
+            return
+        }
+
+        let currentTime = player.currentTime().seconds
+        guard currentTime.isFinite else {
+            markPlayerUnready()
+            return
+        }
+
+        if abs(currentTime - lastPlaybackTime) < 0.04 {
+            stagnantChecks += 1
+        } else {
+            stagnantChecks = 0
+            restartAttempts = 0
+        }
+        lastPlaybackTime = currentTime
+
+        if stagnantChecks >= 2 {
+            restartAttempts += 1
+            if restartAttempts >= 3 {
+                reportPlaybackFailure()
+            } else {
+                restartPlayback()
+            }
+        }
+    }
+
+    private func markPlayerUnready() {
+        unreadyChecks += 1
+        player.play()
+        if unreadyChecks >= 4 {
+            reportPlaybackFailure()
+        }
+    }
+
+    private func reportPlaybackFailure() {
+        guard !isRetiring, !failureReported else { return }
+        failureReported = true
+        onPlaybackFailure()
+    }
+
+    private func owns(_ itemID: ObjectIdentifier?) -> Bool {
+        guard let itemID else { return false }
+        if let currentItem = player.currentItem,
+           ObjectIdentifier(currentItem) == itemID {
+            return true
+        }
+        return player.items().contains { ObjectIdentifier($0) == itemID }
+    }
+
+    private func restartPlayback() {
+        guard !isRetiring else { return }
+        stagnantChecks = 0
+        lastPlaybackTime = 0
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isRetiring else { return }
+                self.player.play()
+            }
+        }
+    }
+
+    func beginRetirement() {
+        guard !isRetiring else { return }
+        isRetiring = true
+        watchdog?.invalidate()
+        watchdog = nil
+        if let stallObserver {
+            NotificationCenter.default.removeObserver(stallObserver)
+            self.stallObserver = nil
+        }
+        if let failureObserver {
+            NotificationCenter.default.removeObserver(failureObserver)
+            self.failureObserver = nil
+        }
+        if let boundaryObserver {
+            player.removeTimeObserver(boundaryObserver)
+            self.boundaryObserver = nil
+        }
+        player.pause()
+        player.isMuted = true
+        window.orderOut(nil)
+    }
+
+    func ensureVisibleAndPlaying() {
+        guard !isRetiring else { return }
+        if !window.isVisible {
+            window.orderBack(nil)
+        }
+        player.play()
+    }
+
+    func setFillMode(_ fillMode: WallpaperController.FillMode) {
+        guard !isRetiring else { return }
+        videoView.playerLayer.videoGravity = switch fillMode {
+        case .fill: .resizeAspectFill
+        case .fit: .resizeAspect
+        case .stretch: .resize
+        }
+    }
+}
+
+private final class VideoDesktopView: NSView {
+    let playerLayer = AVPlayerLayer()
+    private let handlesDesktopClicks: Bool
+
+    init(frame frameRect: NSRect, handlesDesktopClicks: Bool) {
+        self.handlesDesktopClicks = handlesDesktopClicks
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer = playerLayer
+        playerLayer.backgroundColor = NSColor.black.cgColor
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        handlesDesktopClicks
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard handlesDesktopClicks, event.clickCount == 2 else { return }
+        DesktopInteractionSupport.revealDesktop()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+@MainActor
+private final class DesktopInteractionWindow {
+    private let window: NSWindow
+
+    init(screen: NSScreen) {
+        let view = DesktopInteractionView(frame: screen.frame)
+        window = NSWindow(
+            contentRect: screen.frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.contentView = view
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.ignoresMouseEvents = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.animationBehavior = .none
+        window.setFrame(screen.frame, display: true)
+        window.orderBack(nil)
+    }
+
+    func close() {
+        window.orderOut(nil)
+    }
+}
+
+@MainActor
+private final class DesktopInteractionView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard event.clickCount == 2 else { return }
+        DesktopInteractionSupport.revealDesktop()
+    }
+}
+
+@MainActor
+private enum DesktopInteractionSupport {
+    static var needsAsterHitTarget: Bool {
+        let finderShowsDesktop = CFPreferencesCopyAppValue(
+            "CreateDesktop" as CFString,
+            "com.apple.finder" as CFString
+        ) as? Bool
+        return finderShowsDesktop == false
+    }
+
+    static func revealDesktop() {
+        guard CGPreflightPostEventAccess() || CGRequestPostEventAccess() else { return }
+        let source = CGEventSource(stateID: .hidSystemState)
+        let keyCode: CGKeyCode = 103 // Fn-F11, macOS's default Show Desktop shortcut.
+        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
+        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        keyDown?.flags = .maskSecondaryFn
+        keyUp?.flags = .maskSecondaryFn
+        keyDown?.post(tap: .cghidEventTap)
+        keyUp?.post(tap: .cghidEventTap)
+    }
+}

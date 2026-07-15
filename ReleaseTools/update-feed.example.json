@@ -1,0 +1,18 @@
+{
+  "version": "1.1.0",
+  "build": 2,
+  "headline": "A calmer, faster Aster",
+  "summary": "This release improves everyday reliability and adds a new feature.",
+  "releaseDate": "2026-07-13",
+  "downloadURL": "https://updates.example.com/Aster-1.1.0.dmg",
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "minimumSystemVersion": "14.0",
+  "features": [
+    {
+      "id": "example-feature",
+      "title": "Example feature",
+      "description": "Describe exactly what changed and why it is useful.",
+      "symbol": "sparkles"
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+name: Publish Aster Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version matching ReleaseNotes.json, such as 1.0.0-beta.1
+        required: true
+        type: string
+      build:
+        description: Increasing numeric build number
+        required: true
+        type: number
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: zsh {0}
+
+concurrency:
+  group: aster-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      VERSION: ${{ inputs.version }}
+      BUILD: ${{ inputs.build }}
+      FEED_URL: https://raw.githubusercontent.com/Sl0oth/Aster/main/releases/stable.json
+      PUBLIC_KEY: ${{ vars.ASTER_UPDATE_PUBLIC_KEY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify release secrets
+        env:
+          UPDATE_PRIVATE_KEY: ${{ secrets.ASTER_UPDATE_PRIVATE_KEY }}
+        run: |
+          for name in UPDATE_PRIVATE_KEY PUBLIC_KEY; do
+            if [[ -z "${(P)name}" ]]; then
+              print -u2 "Missing required GitHub secret or variable: $name"
+              exit 1
+            fi
+          done
+
+      - name: Test
+        run: swift test
+
+      - name: Build community release
+        env:
+          ASTER_RELEASE_MODE: community
+          ASTER_VERSION: ${{ env.VERSION }}
+          ASTER_BUILD: ${{ env.BUILD }}
+          ASTER_UPDATE_FEED_URL: ${{ env.FEED_URL }}
+          ASTER_UPDATE_PUBLIC_KEY: ${{ env.PUBLIC_KEY }}
+        run: ReleaseTools/build-release.sh
+
+      - name: Create signed update feed
+        env:
+          ASTER_UPDATE_PRIVATE_KEY: ${{ secrets.ASTER_UPDATE_PRIVATE_KEY }}
+        run: |
+          DMG="dist/Aster-$VERSION.dmg"
+          HASH="$(shasum -a 256 "$DMG" | awk '{print $1}')"
+          DOWNLOAD_URL="https://github.com/Sl0oth/Aster/releases/download/v$VERSION/Aster-$VERSION.dmg"
+          jq --arg version "$VERSION" \
+             --argjson build "$BUILD" \
+             --arg date "$(date -u +%F)" \
+             --arg downloadURL "$DOWNLOAD_URL" \
+             --arg sha256 "$HASH" \
+             '{
+               version: $version,
+               build: $build,
+               headline: .headline,
+               summary: .summary,
+               releaseDate: $date,
+               downloadURL: $downloadURL,
+               sha256: $sha256,
+               minimumSystemVersion: "14.0",
+               features: .features
+             }' Sources/LumaWall/Resources/ReleaseNotes.json > "$RUNNER_TEMP/release.json"
+          mkdir -p releases
+          ReleaseTools/sign-update-feed.swift "$RUNNER_TEMP/release.json" releases/stable.json
+
+      - name: Publish GitHub release
+        run: |
+          DMG="dist/Aster-$VERSION.dmg"
+          HASH="$(shasum -a 256 "$DMG" | awk '{print $1}')"
+          jq -r '"## " + .headline + "\n\n" + .summary + "\n\n" + (.features | map("- **" + .title + "** — " + .description) | join("\n"))' \
+            Sources/LumaWall/Resources/ReleaseNotes.json > "$RUNNER_TEMP/release-notes.md"
+          {
+            print ""
+            print "## First launch"
+            print ""
+            print "This community build is not signed or notarized by Apple. After trying to open Aster, go to **System Settings → Privacy & Security → Open Anyway** and confirm Open. Full instructions are included in the DMG and in [FIRST-LAUNCH.md](https://github.com/Sl0oth/Aster/blob/main/FIRST-LAUNCH.md)."
+            print ""
+            print "**SHA-256:** \`$HASH\`"
+          } >> "$RUNNER_TEMP/release-notes.md"
+          gh release create "v$VERSION" "dist/Aster-$VERSION.dmg#Aster $VERSION" \
+            --title "Aster $VERSION" \
+            --prerelease \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Publish signed feed
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add releases/stable.json
+          git commit -m "Publish Aster $VERSION update feed"
+          git push origin HEAD:main
