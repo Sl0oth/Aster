@@ -100,7 +100,7 @@ jobs:
           } >> "$RUNNER_TEMP/release-notes.md"
           gh release create "v$VERSION" "dist/Aster-$VERSION.dmg#Aster $VERSION" \
             --title "Aster $VERSION" \
-            --prerelease \
+            --latest \
             --notes-file "$RUNNER_TEMP/release-notes.md"
 
       - name: Publish signed feed
