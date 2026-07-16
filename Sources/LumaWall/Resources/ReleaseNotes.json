@@ -1,25 +1,25 @@
 {
-  "version": "1.0.0-beta.2",
-  "headline": "A cleaner start for Shelf and Canvas",
-  "summary": "Shelf now starts with an empty widget layout, while Canvas helps you find your first wallpaper when its library is empty.",
+  "version": "1.0.0-beta.3",
+  "headline": "Updates that install themselves",
+  "summary": "Aster can now verify, install, and relaunch updates without asking you to replace the app manually.",
   "features": [
     {
-      "id": "shelf-empty-start",
-      "title": "Start Shelf your way",
-      "description": "Fresh Shelf setups begin with no widgets selected. Widgets you choose afterward remain saved across launches.",
-      "symbol": "rectangle.grid.2x2"
+      "id": "automatic-install",
+      "title": "Update and restart",
+      "description": "After downloading an update, Aster replaces the installed copy and reopens the new version automatically.",
+      "symbol": "arrow.triangle.2.circlepath.circle.fill"
     },
     {
-      "id": "canvas-sources",
-      "title": "Find your first wallpaper",
-      "description": "An empty Canvas library now links to MotionBGs and MoeWalls alongside the local file picker.",
-      "symbol": "photo.on.rectangle.angled"
+      "id": "verified-install",
+      "title": "Verified before replacement",
+      "description": "Aster checks the signed feed, checksum, app identity, version, architecture, and code signature before installation.",
+      "symbol": "checkmark.shield.fill"
     },
     {
-      "id": "canvas-empty-search",
-      "title": "Clearer empty states",
-      "description": "Canvas now distinguishes an empty library from a search or filter with no matches.",
-      "symbol": "magnifyingglass"
+      "id": "update-fallback",
+      "title": "A safe fallback",
+      "description": "If Aster cannot replace itself, it keeps the verified DMG and opens it for manual installation instead.",
+      "symbol": "externaldrive.fill.badge.checkmark"
     }
   ]
 }

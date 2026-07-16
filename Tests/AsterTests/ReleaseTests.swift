@@ -5,6 +5,7 @@ import XCTest
 final class ReleaseTests: XCTestCase {
     func testSemanticVersionOrdering() throws {
         XCTAssertGreaterThan(try version("1.0.0"), try version("1.0.0-beta.9"))
+        XCTAssertGreaterThan(try version("1.0.0-beta.3"), try version("1.0.0-beta.2"))
         XCTAssertGreaterThan(try version("1.0.0-beta.2"), try version("1.0.0-beta.1"))
         XCTAssertGreaterThan(try version("1.1.0"), try version("1.0.9"))
         XCTAssertEqual(try version("1.0"), try version("1.0.0"))
@@ -13,7 +14,7 @@ final class ReleaseTests: XCTestCase {
 
     func testBundledReleaseNotesAreComplete() throws {
         let notes = try XCTUnwrap(AsterBundledReleaseNotes.load())
-        XCTAssertEqual(notes.version, "1.0.0-beta.2")
+        XCTAssertEqual(notes.version, "1.0.0-beta.3")
         XCTAssertFalse(notes.headline.isEmpty)
         XCTAssertFalse(notes.summary.isEmpty)
         XCTAssertFalse(notes.features.isEmpty)
