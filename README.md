@@ -109,7 +109,7 @@ macOS stores the dragged status-item positions, while Aster stores its own Bar s
 
 ## Updates
 
-Aster checks its configured HTTPS release feed at launch and at most once every six hours. Release metadata must carry a valid Ed25519 signature from Aster's embedded update key. Aster verifies the semantic version, build number, minimum macOS version, HTTPS transport, and signed SHA-256 checksum before opening a download. After an upgraded version launches, Aster shows its bundled What's New notes once.
+Aster checks its configured HTTPS release feed at launch and at most once every six hours. Release metadata must carry a valid Ed25519 signature from Aster's embedded update key. Aster verifies the semantic version, build number, minimum macOS version, HTTPS transport, signed SHA-256 checksum, downloaded app identity, architecture, and code signature before installing an update. An installed copy replaces itself, restarts automatically, and shows its bundled What's New notes after relaunching. If Aster is not in `/Applications` or `~/Applications`, or that location is not writable, it opens the verified DMG for manual installation instead.
 
 The signed update feed and community installers are hosted by the public [Sl0oth/Aster](https://github.com/Sl0oth/Aster) repository, so Aster does not depend on a separately operated update server.
 

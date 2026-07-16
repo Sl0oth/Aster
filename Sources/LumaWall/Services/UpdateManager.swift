@@ -50,6 +50,7 @@ final class UpdateManager {
         case checking
         case updateAvailable
         case downloading
+        case installing
         case downloaded
         case upToDate
         case failed
@@ -72,13 +73,14 @@ final class UpdateManager {
     let currentBuild: Int
 
     var isFeedConfigured: Bool { feedURL != nil && updatePublicKey != nil }
-    var isBusy: Bool { state == .checking || state == .downloading }
+    var isBusy: Bool { state == .checking || state == .downloading || state == .installing }
     var updateButtonTitle: String {
         switch state {
         case .checking: "Checking…"
         case .downloading: "Downloading…"
+        case .installing: "Installing…"
         case .downloaded: "Open Download"
-        case .updateAvailable: "Download Update"
+        case .updateAvailable: "Update and Restart"
         default: "Check for Updates"
         }
     }
@@ -240,12 +242,27 @@ final class UpdateManager {
             try FileManager.default.moveItem(at: temporaryURL, to: destination)
 
             downloadedFileURL = destination
-            state = .downloaded
-            statusMessage = "Downloaded Aster \(release.version)"
-            NSWorkspace.shared.open(destination)
+            state = .installing
+            statusMessage = "Installing Aster \(release.version)…"
+
+            do {
+                try await AsterUpdateInstaller.install(
+                    diskImageURL: destination,
+                    release: release
+                )
+                try? FileManager.default.removeItem(at: destination)
+                downloadedFileURL = nil
+                statusMessage = "Restarting Aster \(release.version)…"
+                NSApplication.shared.terminate(nil)
+            } catch let error as AsterUpdateInstaller.InstallationError
+                where error.allowsManualInstallation {
+                state = .downloaded
+                statusMessage = "Downloaded Aster \(release.version) — finish installing manually"
+                NSWorkspace.shared.open(destination)
+            }
         } catch {
             state = .failed
-            statusMessage = "Update download failed: \(error.localizedDescription)"
+            statusMessage = "Update failed: \(error.localizedDescription)"
         }
     }
 

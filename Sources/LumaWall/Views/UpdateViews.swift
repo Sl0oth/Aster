@@ -71,8 +71,9 @@ struct UpdateDetailsView: View {
     private var updateActionTitle: String {
         switch updates.state {
         case .downloading: "Downloading…"
+        case .installing: "Installing…"
         case .downloaded: "Open Download"
-        default: "Update Aster"
+        default: "Update and Restart"
         }
     }
 

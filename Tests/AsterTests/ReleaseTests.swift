@@ -85,6 +85,47 @@ final class ReleaseTests: XCTestCase {
         )
     }
 
+    func testUpdateInstallerValidatesAdvertisedApplicationMetadata() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AsterUpdateMetadataTests-\(UUID().uuidString)", isDirectory: true)
+        let app = root.appendingPathComponent("Aster.app", isDirectory: true)
+        let contents = app.appendingPathComponent("Contents", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+
+        let info: [String: Any] = [
+            "CFBundleIdentifier": AsterUpdateInstaller.expectedBundleIdentifier,
+            "CFBundleShortVersionString": "1.0.0-beta.3",
+            "CFBundleVersion": "3"
+        ]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: contents.appendingPathComponent("Info.plist"))
+
+        let release = try updateRelease(version: "1.0.0-beta.3", build: 3)
+        XCTAssertNoThrow(try AsterUpdateInstaller.validateMetadata(at: app, release: release))
+        XCTAssertThrowsError(
+            try AsterUpdateInstaller.validateMetadata(
+                at: app,
+                release: updateRelease(version: "1.0.0-beta.4", build: 4)
+            )
+        ) { error in
+            guard case AsterUpdateInstaller.InstallationError.unexpectedVersion = error else {
+                return XCTFail("Expected version validation failure, got \(error)")
+            }
+        }
+    }
+
+    func testOnlyLocationFailuresAllowManualUpdateFallback() {
+        XCTAssertTrue(AsterUpdateInstaller.InstallationError.appIsNotInstalled.allowsManualInstallation)
+        XCTAssertTrue(AsterUpdateInstaller.InstallationError.destinationIsNotWritable.allowsManualInstallation)
+        XCTAssertFalse(AsterUpdateInstaller.InstallationError.invalidCodeSignature.allowsManualInstallation)
+        XCTAssertFalse(AsterUpdateInstaller.InstallationError.unexpectedVersion.allowsManualInstallation)
+    }
+
     func testModuleSelectionPersistsAndChoosesFirstEnabledModule() throws {
         let suiteName = "AsterTests.ModuleSelection.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -253,5 +294,19 @@ final class ReleaseTests: XCTestCase {
 
     private func version(_ value: String) throws -> AsterSemanticVersion {
         try XCTUnwrap(AsterSemanticVersion(value), "Invalid test version: \(value)")
+    }
+
+    private func updateRelease(version: String, build: Int) throws -> AsterRelease {
+        AsterRelease(
+            version: version,
+            build: build,
+            headline: "Test update",
+            summary: "Installer validation fixture.",
+            releaseDate: "2026-07-16",
+            downloadURL: try XCTUnwrap(URL(string: "https://updates.example.org/Aster.dmg")),
+            sha256: String(repeating: "a", count: 64),
+            minimumSystemVersion: "14.0",
+            features: []
+        )
     }
 }
