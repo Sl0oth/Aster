@@ -1,25 +1,25 @@
 {
-  "version": "1.0.0-beta.3",
-  "headline": "Updates that install themselves",
-  "summary": "Aster can now verify, install, and relaunch updates without asking you to replace the app manually.",
+  "version": "1.0.0-beta.4",
+  "headline": "A clean start after every update",
+  "summary": "New installations and newly updated builds now open on Home so What's New stays clear and easy to read.",
   "features": [
     {
-      "id": "automatic-install",
-      "title": "Update and restart",
-      "description": "After downloading an update, Aster replaces the installed copy and reopens the new version automatically.",
-      "symbol": "arrow.triangle.2.circlepath.circle.fill"
+      "id": "home-after-update",
+      "title": "Home after updating",
+      "description": "The first launch of each new version or build opens Aster's Home page instead of selecting Canvas.",
+      "symbol": "house.fill"
     },
     {
-      "id": "verified-install",
-      "title": "Verified before replacement",
-      "description": "Aster checks the signed feed, checksum, app identity, version, architecture, and code signature before installation.",
-      "symbol": "checkmark.shield.fill"
+      "id": "clear-whats-new",
+      "title": "An unobstructed What's New",
+      "description": "Canvas no longer focuses its search field behind the update introduction, preventing its outline from covering the panel.",
+      "symbol": "sparkles.rectangle.stack.fill"
     },
     {
-      "id": "update-fallback",
-      "title": "A safe fallback",
-      "description": "If Aster cannot replace itself, it keeps the verified DMG and opens it for manual installation instead.",
-      "symbol": "externaldrive.fill.badge.checkmark"
+      "id": "same-build-navigation",
+      "title": "Normal navigation afterward",
+      "description": "Later launches of the same build continue using Aster's existing enabled-module navigation behavior.",
+      "symbol": "sidebar.left"
     }
   ]
 }

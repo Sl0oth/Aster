@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 enum AsterModule: String, CaseIterable, Identifiable {
@@ -77,6 +78,7 @@ enum AsterModule: String, CaseIterable, Identifiable {
 
 enum AsterModuleSelection {
     static let defaultsKey = "Aster.Modules.enabled"
+    static let lastOpenedReleaseKey = "Aster.Navigation.lastOpenedRelease"
 
     static func load(from defaults: UserDefaults = .standard) -> Set<AsterModule> {
         Set((defaults.stringArray(forKey: defaultsKey) ?? []).compactMap(AsterModule.init(rawValue:)))
@@ -89,6 +91,24 @@ enum AsterModuleSelection {
     static func initialModule(from defaults: UserDefaults = .standard) -> AsterModule {
         let enabled = load(from: defaults)
         return AsterModule.onboardingOrder.first(where: enabled.contains) ?? .home
+    }
+
+    static func initialModuleForLaunch(
+        releaseIdentifier: String = currentReleaseIdentifier(),
+        from defaults: UserDefaults = .standard
+    ) -> AsterModule {
+        guard defaults.string(forKey: lastOpenedReleaseKey) == releaseIdentifier else {
+            defaults.set(releaseIdentifier, forKey: lastOpenedReleaseKey)
+            return .home
+        }
+        return initialModule(from: defaults)
+    }
+
+    private static func currentReleaseIdentifier(bundle: Bundle = .main) -> String {
+        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "development"
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        return "\(version) (\(build))"
     }
 }
 

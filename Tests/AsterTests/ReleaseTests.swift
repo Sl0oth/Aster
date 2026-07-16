@@ -5,6 +5,7 @@ import XCTest
 final class ReleaseTests: XCTestCase {
     func testSemanticVersionOrdering() throws {
         XCTAssertGreaterThan(try version("1.0.0"), try version("1.0.0-beta.9"))
+        XCTAssertGreaterThan(try version("1.0.0-beta.4"), try version("1.0.0-beta.3"))
         XCTAssertGreaterThan(try version("1.0.0-beta.3"), try version("1.0.0-beta.2"))
         XCTAssertGreaterThan(try version("1.0.0-beta.2"), try version("1.0.0-beta.1"))
         XCTAssertGreaterThan(try version("1.1.0"), try version("1.0.9"))
@@ -14,7 +15,7 @@ final class ReleaseTests: XCTestCase {
 
     func testBundledReleaseNotesAreComplete() throws {
         let notes = try XCTUnwrap(AsterBundledReleaseNotes.load())
-        XCTAssertEqual(notes.version, "1.0.0-beta.3")
+        XCTAssertEqual(notes.version, "1.0.0-beta.4")
         XCTAssertFalse(notes.headline.isEmpty)
         XCTAssertFalse(notes.summary.isEmpty)
         XCTAssertFalse(notes.features.isEmpty)
@@ -135,6 +136,32 @@ final class ReleaseTests: XCTestCase {
         AsterModuleSelection.save([.switchboard, .canvas], to: defaults)
         XCTAssertEqual(AsterModuleSelection.load(from: defaults), [.canvas, .switchboard])
         XCTAssertEqual(AsterModuleSelection.initialModule(from: defaults), .canvas)
+
+        XCTAssertEqual(
+            AsterModuleSelection.initialModuleForLaunch(
+                releaseIdentifier: "1.0.0-beta.3 (3)",
+                from: defaults
+            ),
+            .home
+        )
+        XCTAssertEqual(
+            AsterModuleSelection.initialModuleForLaunch(
+                releaseIdentifier: "1.0.0-beta.3 (3)",
+                from: defaults
+            ),
+            .canvas
+        )
+        XCTAssertEqual(
+            AsterModuleSelection.initialModuleForLaunch(
+                releaseIdentifier: "1.0.0-beta.4 (4)",
+                from: defaults
+            ),
+            .home
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: AsterModuleSelection.lastOpenedReleaseKey),
+            "1.0.0-beta.4 (4)"
+        )
     }
 
     @MainActor

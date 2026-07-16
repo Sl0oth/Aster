@@ -11,7 +11,7 @@ struct RootView: View {
     @Environment(BarController.self) private var bar
     @Environment(SwitchController.self) private var switches
     @Environment(UpdateManager.self) private var updates
-    @State private var selectedModule: AsterModule = AsterModuleSelection.initialModule()
+    @State private var selectedModule: AsterModule = AsterModuleSelection.initialModuleForLaunch()
     @State private var isImporterPresented = false
     @State private var importError: String?
     @State private var showsUpdateDetails = false
