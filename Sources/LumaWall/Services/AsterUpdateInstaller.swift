@@ -59,6 +59,68 @@ enum AsterUpdateInstaller {
 
     static let expectedBundleIdentifier = "app.aster.Aster"
 
+    static let relaunchHelperScript = #"""
+    pid="$1"
+    app="$2"
+    backup="$3"
+    registrar="$4"
+    opener="$5"
+
+    # Give Aster time to finish detaching the update image, remove the
+    # downloaded installer, and respond to its normal terminate request.
+    for _ in {1..30}; do
+        if ! /bin/kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        /bin/sleep 0.1
+    done
+
+    # A modal SwiftUI sheet can prevent NSApplication.terminate from closing
+    # the old process. Finish that process externally so it cannot keep the
+    # single-instance bundle registered and block the replacement app.
+    if /bin/kill -0 "$pid" 2>/dev/null; then
+        /bin/kill -TERM "$pid" 2>/dev/null || true
+        for _ in {1..50}; do
+            if ! /bin/kill -0 "$pid" 2>/dev/null; then
+                break
+            fi
+            /bin/sleep 0.1
+        done
+    fi
+    if /bin/kill -0 "$pid" 2>/dev/null; then
+        /bin/kill -KILL "$pid" 2>/dev/null || true
+        for _ in {1..20}; do
+            if ! /bin/kill -0 "$pid" 2>/dev/null; then
+                break
+            fi
+            /bin/sleep 0.1
+        done
+    fi
+    if /bin/kill -0 "$pid" 2>/dev/null; then
+        exit 1
+    fi
+
+    /bin/rm -rf -- "$backup"
+    "$registrar" -f "$app" >/dev/null 2>&1 || true
+
+    # Do not use `open -n`: Aster explicitly prohibits multiple instances,
+    # and the flag makes Launch Services reject the relaunch if it has not yet
+    # discarded the old registration.
+    for _ in {1..20}; do
+        if "$opener" "$app" >/dev/null 2>&1; then
+            exit 0
+        fi
+        /bin/sleep 0.25
+    done
+
+    executable="$app/Contents/MacOS/Aster"
+    if [ -x "$executable" ]; then
+        /usr/bin/nohup "$executable" >/dev/null 2>&1 &
+        exit 0
+    fi
+    exit 1
+    """#
+
     static func install(
         diskImageURL: URL,
         release: AsterRelease,
@@ -195,28 +257,17 @@ enum AsterUpdateInstaller {
     }
 
     private static func launchRelaunchHelper(applicationURL: URL, backupURL: URL) throws {
-        let script = #"""
-        pid="$1"
-        app="$2"
-        backup="$3"
-        for _ in {1..200}; do
-            if ! /bin/kill -0 "$pid" 2>/dev/null; then
-                /bin/rm -rf -- "$backup"
-                exec /usr/bin/open -n "$app"
-            fi
-            /bin/sleep 0.1
-        done
-        exit 1
-        """#
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = [
             "-c",
-            script,
+            relaunchHelperScript,
             "aster-update-relaunch",
             String(ProcessInfo.processInfo.processIdentifier),
             applicationURL.path,
-            backupURL.path
+            backupURL.path,
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+            "/usr/bin/open"
         ]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

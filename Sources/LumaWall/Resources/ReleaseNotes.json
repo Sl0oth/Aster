@@ -1,25 +1,25 @@
 {
-  "version": "1.0.0-beta.4",
-  "headline": "A clean start after every update",
-  "summary": "New installations and newly updated builds now open on Home so What's New stays clear and easy to read.",
+  "version": "1.0.0-beta.5",
+  "headline": "Updates that restart themselves",
+  "summary": "Aster now reliably closes the old build, replaces it in place, and reopens the updated app automatically.",
   "features": [
+    {
+      "id": "reliable-update-restart",
+      "title": "Reliable Update and Restart",
+      "description": "The update helper now finishes a stuck old process before reopening the newly installed version.",
+      "symbol": "arrow.triangle.2.circlepath.circle.fill"
+    },
+    {
+      "id": "launch-services-refresh",
+      "title": "Clean app handoff",
+      "description": "Aster refreshes its macOS app registration and removes the previous-build backup before relaunching.",
+      "symbol": "checkmark.circle.fill"
+    },
     {
       "id": "home-after-update",
       "title": "Home after updating",
-      "description": "The first launch of each new version or build opens Aster's Home page instead of selecting Canvas.",
+      "description": "The updated app reopens on Home, keeping What's New clear and unobstructed.",
       "symbol": "house.fill"
-    },
-    {
-      "id": "clear-whats-new",
-      "title": "An unobstructed What's New",
-      "description": "Canvas no longer focuses its search field behind the update introduction, preventing its outline from covering the panel.",
-      "symbol": "sparkles.rectangle.stack.fill"
-    },
-    {
-      "id": "same-build-navigation",
-      "title": "Normal navigation afterward",
-      "description": "Later launches of the same build continue using Aster's existing enabled-module navigation behavior.",
-      "symbol": "sidebar.left"
     }
   ]
 }

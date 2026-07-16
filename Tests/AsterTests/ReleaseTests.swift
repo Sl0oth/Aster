@@ -5,6 +5,7 @@ import XCTest
 final class ReleaseTests: XCTestCase {
     func testSemanticVersionOrdering() throws {
         XCTAssertGreaterThan(try version("1.0.0"), try version("1.0.0-beta.9"))
+        XCTAssertGreaterThan(try version("1.0.0-beta.5"), try version("1.0.0-beta.4"))
         XCTAssertGreaterThan(try version("1.0.0-beta.4"), try version("1.0.0-beta.3"))
         XCTAssertGreaterThan(try version("1.0.0-beta.3"), try version("1.0.0-beta.2"))
         XCTAssertGreaterThan(try version("1.0.0-beta.2"), try version("1.0.0-beta.1"))
@@ -15,7 +16,7 @@ final class ReleaseTests: XCTestCase {
 
     func testBundledReleaseNotesAreComplete() throws {
         let notes = try XCTUnwrap(AsterBundledReleaseNotes.load())
-        XCTAssertEqual(notes.version, "1.0.0-beta.4")
+        XCTAssertEqual(notes.version, "1.0.0-beta.5")
         XCTAssertFalse(notes.headline.isEmpty)
         XCTAssertFalse(notes.summary.isEmpty)
         XCTAssertFalse(notes.features.isEmpty)
@@ -126,6 +127,45 @@ final class ReleaseTests: XCTestCase {
         XCTAssertTrue(AsterUpdateInstaller.InstallationError.destinationIsNotWritable.allowsManualInstallation)
         XCTAssertFalse(AsterUpdateInstaller.InstallationError.invalidCodeSignature.allowsManualInstallation)
         XCTAssertFalse(AsterUpdateInstaller.InstallationError.unexpectedVersion.allowsManualInstallation)
+    }
+
+    func testRelaunchHelperFinishesStuckProcessAndLaunchesReplacement() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AsterRelaunchTests-\(UUID().uuidString)", isDirectory: true)
+        let backup = root.appendingPathComponent("Aster-backup.app", isDirectory: true)
+        let launchMarker = root.appendingPathComponent("replacement-launched")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+
+        let oldApplication = Process()
+        oldApplication.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        oldApplication.arguments = ["30"]
+        try oldApplication.run()
+        defer {
+            if oldApplication.isRunning { oldApplication.terminate() }
+        }
+
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        helper.arguments = [
+            "-c",
+            AsterUpdateInstaller.relaunchHelperScript,
+            "aster-update-relaunch-test",
+            String(oldApplication.processIdentifier),
+            launchMarker.path,
+            backup.path,
+            "/usr/bin/true",
+            "/usr/bin/touch"
+        ]
+        try helper.run()
+        helper.waitUntilExit()
+        oldApplication.waitUntilExit()
+
+        XCTAssertEqual(helper.terminationStatus, 0)
+        XCTAssertFalse(oldApplication.isRunning)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: launchMarker.path))
+        XCTAssertFalse(AsterUpdateInstaller.relaunchHelperScript.contains("\"$opener\" -n"))
     }
 
     func testModuleSelectionPersistsAndChoosesFirstEnabledModule() throws {
