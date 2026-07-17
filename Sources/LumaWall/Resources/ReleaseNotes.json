@@ -1,25 +1,25 @@
 {
-  "version": "1.0.0-beta.5",
-  "headline": "Updates that restart themselves",
-  "summary": "Aster now reliably closes the old build, replaces it in place, and reopens the updated app automatically.",
+  "version": "1.0.0-beta.6",
+  "headline": "Smart Pause for motion wallpapers",
+  "summary": "Canvas can now pause motion wallpaper decoding when another app is full screen, the Mac is under heavy CPU load, or Low Power Mode is enabled.",
   "features": [
     {
-      "id": "reliable-update-restart",
-      "title": "Reliable Update and Restart",
-      "description": "The update helper now finishes a stuck old process before reopening the newly installed version.",
-      "symbol": "arrow.triangle.2.circlepath.circle.fill"
+      "id": "full-screen-smart-pause",
+      "title": "Pause behind full-screen apps",
+      "description": "Canvas automatically pauses motion wallpapers while another application occupies a full screen, then resumes afterward.",
+      "symbol": "arrow.up.left.and.arrow.down.right"
     },
     {
-      "id": "launch-services-refresh",
-      "title": "Clean app handoff",
-      "description": "Aster refreshes its macOS app registration and removes the previous-build backup before relaunching.",
-      "symbol": "checkmark.circle.fill"
+      "id": "system-load-smart-pause",
+      "title": "Configurable CPU protection",
+      "description": "Choose a 50–95% system CPU threshold. Sustained load pauses playback and built-in hysteresis prevents rapid toggling.",
+      "symbol": "gauge.with.dots.needle.67percent"
     },
     {
-      "id": "home-after-update",
-      "title": "Home after updating",
-      "description": "The updated app reopens on Home, keeping What's New clear and unobstructed.",
-      "symbol": "house.fill"
+      "id": "low-power-smart-pause",
+      "title": "Low Power Mode aware",
+      "description": "Motion wallpapers can stop decoding while Low Power Mode is active, while still-image wallpapers remain unaffected.",
+      "symbol": "leaf.fill"
     }
   ]
 }

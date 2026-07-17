@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Darwin
 import Observation
 
 @MainActor
@@ -62,6 +63,23 @@ final class WallpaperController {
         }
     }
 
+    enum MotionPauseReason: Equatable, Sendable {
+        case fullScreenApplication(String)
+        case highSystemLoad(Int)
+        case lowPowerMode
+
+        var message: String {
+            switch self {
+            case let .fullScreenApplication(name):
+                "\(name) is full screen"
+            case let .highSystemLoad(percent):
+                "system CPU usage is \(percent)%"
+            case .lowPowerMode:
+                "Low Power Mode is enabled"
+            }
+        }
+    }
+
     var isEnabled: Bool {
         didSet {
             guard isEnabled != oldValue else { return }
@@ -103,6 +121,49 @@ final class WallpaperController {
             defaults.set(autoResumeMotionWallpaper, forKey: autoResumeKey)
         }
     }
+    var pauseMotionForFullScreenApps = true {
+        didSet {
+            guard pauseMotionForFullScreenApps != oldValue else { return }
+            defaults.set(pauseMotionForFullScreenApps, forKey: pauseForFullScreenAppsKey)
+            evaluateSmartPausePolicy(samplesSystemLoad: false)
+        }
+    }
+    var pauseMotionForHighSystemLoad = true {
+        didSet {
+            guard pauseMotionForHighSystemLoad != oldValue else { return }
+            defaults.set(pauseMotionForHighSystemLoad, forKey: pauseForHighSystemLoadKey)
+            resetHighSystemLoadDetection()
+            evaluateSmartPausePolicy(samplesSystemLoad: false)
+        }
+    }
+    var highSystemLoadThreshold = 80.0 {
+        didSet {
+            guard highSystemLoadThreshold != oldValue else { return }
+            defaults.set(highSystemLoadThreshold, forKey: highSystemLoadThresholdKey)
+            resetHighSystemLoadDetection()
+            evaluateSmartPausePolicy(samplesSystemLoad: false)
+        }
+    }
+    var pauseMotionInLowPowerMode = true {
+        didSet {
+            guard pauseMotionInLowPowerMode != oldValue else { return }
+            defaults.set(pauseMotionInLowPowerMode, forKey: pauseInLowPowerModeKey)
+            evaluateSmartPausePolicy(samplesSystemLoad: false)
+        }
+    }
+    private(set) var motionPauseReason: MotionPauseReason?
+    private(set) var currentSystemLoadPercent: Int?
+    var isMotionWallpaperPaused: Bool { motionPauseReason != nil }
+    var smartPauseStatusMessage: String {
+        if let motionPauseReason {
+            return "Paused — \(motionPauseReason.message)"
+        }
+        if isAnimating, let currentSystemLoadPercent, pauseMotionForHighSystemLoad {
+            return "Playing · System CPU usage \(currentSystemLoadPercent)%"
+        }
+        if isAnimating { return "Playing · Smart Pause is monitoring activity" }
+        return "Applies to motion wallpapers; still images are unaffected."
+    }
     var shuffleRate: ShuffleRate = .fiveMinutes {
         didSet {
             guard shuffleRate != oldValue else { return }
@@ -125,6 +186,11 @@ final class WallpaperController {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var playbackActivity: NSObjectProtocol?
     private var playbackRecoveryTask: Task<Void, Never>?
+    private var smartPauseTask: Task<Void, Never>?
+    private var cpuLoadSampler = SystemCPULoadSampler()
+    private var highLoadSampleCount = 0
+    private var lowLoadSampleCount = 0
+    private var isHighSystemLoad = false
     private var shuffleTask: Task<Void, Never>?
     private weak var shuffleLibrary: WallpaperLibrary?
     private var shuffleQueue: [UUID] = []
@@ -135,6 +201,10 @@ final class WallpaperController {
     private let defaults: UserDefaults
     private let enabledKey = "Aster.Canvas.enabled"
     private let autoResumeKey = "Aster.Canvas.autoResumeMotion"
+    private let pauseForFullScreenAppsKey = "Aster.Canvas.smartPause.fullScreenApps"
+    private let pauseForHighSystemLoadKey = "Aster.Canvas.smartPause.highSystemLoad"
+    private let highSystemLoadThresholdKey = "Aster.Canvas.smartPause.highSystemLoadThreshold"
+    private let pauseInLowPowerModeKey = "Aster.Canvas.smartPause.lowPowerMode"
     private let fillModeKey = "Aster.Canvas.fillMode"
     private let lastAppliedKey = "Aster.Canvas.lastAppliedWallpaper"
     private let lastMotionAppliedKey = "Aster.Canvas.lastMotionWallpaper"
@@ -152,6 +222,11 @@ final class WallpaperController {
         isEnabled = defaults.object(forKey: enabledKey) as? Bool ?? true
         refreshLaunchAtLoginStatus()
         autoResumeMotionWallpaper = defaults.object(forKey: autoResumeKey) as? Bool ?? true
+        pauseMotionForFullScreenApps = defaults.object(forKey: pauseForFullScreenAppsKey) as? Bool ?? true
+        pauseMotionForHighSystemLoad = defaults.object(forKey: pauseForHighSystemLoadKey) as? Bool ?? true
+        let storedLoadThreshold = defaults.object(forKey: highSystemLoadThresholdKey) as? Double ?? 80
+        highSystemLoadThreshold = min(max(storedLoadThreshold, 50), 95)
+        pauseMotionInLowPowerMode = defaults.object(forKey: pauseInLowPowerModeKey) as? Bool ?? true
         screenSaverIsInstalled = ScreenSaverInstaller.isInstalled
         screenSaverIsConfigured = defaults.bool(forKey: screenSaverConfiguredKey)
             && screenSaverIsInstalled
@@ -352,6 +427,12 @@ final class WallpaperController {
         workspaceObservers.removeAll()
         playbackRecoveryTask?.cancel()
         playbackRecoveryTask = nil
+        smartPauseTask?.cancel()
+        smartPauseTask = nil
+        cpuLoadSampler.reset()
+        resetHighSystemLoadDetection()
+        currentSystemLoadPercent = nil
+        motionPauseReason = nil
         isRecoveringPlayback = false
         retireCurrentVideoWindows()
         desktopInteractionWindows.forEach { $0.close() }
@@ -587,10 +668,7 @@ final class WallpaperController {
     }
 
     private func applyVideo(_ url: URL) {
-        playbackActivity = ProcessInfo.processInfo.beginActivity(
-            options: .userInitiatedAllowingIdleSystemSleep,
-            reason: "Playing a motion wallpaper"
-        )
+        beginPlaybackActivityIfNeeded()
         rebuildVideoWindows(url: url)
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -601,6 +679,8 @@ final class WallpaperController {
         }
         observePlaybackLifecycle(url: url)
         isAnimating = true
+        startSmartPauseMonitoring()
+        evaluateSmartPausePolicy()
     }
 
     private func rebuildVideoWindows(url: URL) {
@@ -616,6 +696,9 @@ final class WallpaperController {
                     self?.recoverMotionWallpaper(url: url)
                 }
             }
+        }
+        if isMotionWallpaperPaused {
+            videoWindows.forEach { $0.pausePlayback() }
         }
     }
 
@@ -639,7 +722,8 @@ final class WallpaperController {
         let workspaceNames: [Notification.Name] = [
             NSWorkspace.didWakeNotification,
             NSWorkspace.sessionDidBecomeActiveNotification,
-            NSWorkspace.activeSpaceDidChangeNotification
+            NSWorkspace.activeSpaceDidChangeNotification,
+            NSWorkspace.didActivateApplicationNotification
         ]
         workspaceObservers = workspaceNames.map { name in
             NSWorkspace.shared.notificationCenter.addObserver(
@@ -656,6 +740,8 @@ final class WallpaperController {
 
     private func resumeMotionWallpaper(url: URL) {
         guard isAnimating else { return }
+        evaluateSmartPausePolicy(samplesSystemLoad: false)
+        guard !isMotionWallpaperPaused else { return }
         guard !videoWindows.isEmpty else {
             recoverMotionWallpaper(url: url)
             return
@@ -664,7 +750,7 @@ final class WallpaperController {
     }
 
     private func recoverMotionWallpaper(url: URL) {
-        guard isAnimating, !isRecoveringPlayback else { return }
+        guard isAnimating, !isMotionWallpaperPaused, !isRecoveringPlayback else { return }
         isRecoveringPlayback = true
         statusMessage = "Recovering motion wallpaper…"
         rebuildVideoWindows(url: url)
@@ -676,6 +762,151 @@ final class WallpaperController {
             guard !Task.isCancelled else { return }
             self?.isRecoveringPlayback = false
         }
+    }
+
+    private func beginPlaybackActivityIfNeeded() {
+        guard playbackActivity == nil else { return }
+        playbackActivity = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Playing a motion wallpaper"
+        )
+    }
+
+    private func endPlaybackActivityIfNeeded() {
+        guard let playbackActivity else { return }
+        ProcessInfo.processInfo.endActivity(playbackActivity)
+        self.playbackActivity = nil
+    }
+
+    private func startSmartPauseMonitoring() {
+        smartPauseTask?.cancel()
+        cpuLoadSampler.reset()
+        resetHighSystemLoadDetection()
+        smartPauseTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.evaluateSmartPausePolicy()
+                do {
+                    try await Task.sleep(for: .seconds(3))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func evaluateSmartPausePolicy(samplesSystemLoad: Bool = true) {
+        guard isAnimating else { return }
+        if samplesSystemLoad {
+            updateHighSystemLoadState()
+        } else if !pauseMotionForHighSystemLoad {
+            resetHighSystemLoadDetection()
+        }
+
+        let fullScreenApplication = pauseMotionForFullScreenApps
+            ? Self.frontmostFullScreenApplicationName()
+            : nil
+        let newReason = Self.motionPauseReason(
+            pauseForFullScreenApps: pauseMotionForFullScreenApps,
+            fullScreenApplicationName: fullScreenApplication,
+            pauseForHighSystemLoad: pauseMotionForHighSystemLoad,
+            isHighSystemLoad: isHighSystemLoad,
+            systemLoadPercent: currentSystemLoadPercent,
+            pauseInLowPowerMode: pauseMotionInLowPowerMode,
+            isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
+        )
+        setMotionPauseReason(newReason)
+    }
+
+    private func setMotionPauseReason(_ reason: MotionPauseReason?) {
+        guard reason != motionPauseReason else { return }
+        motionPauseReason = reason
+        if let reason {
+            videoWindows.forEach { $0.pausePlayback() }
+            endPlaybackActivityIfNeeded()
+            statusMessage = "Motion wallpaper paused — \(reason.message)"
+        } else {
+            beginPlaybackActivityIfNeeded()
+            videoWindows.forEach { $0.ensureVisibleAndPlaying() }
+            statusMessage = "Motion wallpaper is playing"
+        }
+    }
+
+    private func updateHighSystemLoadState() {
+        guard pauseMotionForHighSystemLoad else {
+            currentSystemLoadPercent = nil
+            resetHighSystemLoadDetection()
+            return
+        }
+        guard let load = cpuLoadSampler.sample() else { return }
+        let percent = Int((load * 100).rounded())
+        currentSystemLoadPercent = percent
+
+        if Double(percent) >= highSystemLoadThreshold {
+            highLoadSampleCount += 1
+            lowLoadSampleCount = 0
+            if highLoadSampleCount >= 2 { isHighSystemLoad = true }
+        } else if Double(percent) <= highSystemLoadThreshold - 10 {
+            lowLoadSampleCount += 1
+            highLoadSampleCount = 0
+            if lowLoadSampleCount >= 3 { isHighSystemLoad = false }
+        } else {
+            highLoadSampleCount = 0
+            lowLoadSampleCount = 0
+        }
+    }
+
+    private func resetHighSystemLoadDetection() {
+        highLoadSampleCount = 0
+        lowLoadSampleCount = 0
+        isHighSystemLoad = false
+    }
+
+    nonisolated static func motionPauseReason(
+        pauseForFullScreenApps: Bool,
+        fullScreenApplicationName: String?,
+        pauseForHighSystemLoad: Bool,
+        isHighSystemLoad: Bool,
+        systemLoadPercent: Int?,
+        pauseInLowPowerMode: Bool,
+        isLowPowerModeEnabled: Bool
+    ) -> MotionPauseReason? {
+        if pauseForFullScreenApps, let fullScreenApplicationName {
+            return .fullScreenApplication(fullScreenApplicationName)
+        }
+        if pauseInLowPowerMode, isLowPowerModeEnabled {
+            return .lowPowerMode
+        }
+        if pauseForHighSystemLoad, isHighSystemLoad {
+            return .highSystemLoad(systemLoadPercent ?? 100)
+        }
+        return nil
+    }
+
+    private static func frontmostFullScreenApplicationName() -> String? {
+        guard let application = NSWorkspace.shared.frontmostApplication,
+              application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              application.activationPolicy == .regular else { return nil }
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
+            as? [[CFString: Any]] else { return nil }
+
+        let screenSizes = NSScreen.screens.map { $0.frame.size }
+        let hasFullScreenWindow = windows.contains { window in
+            guard (window[kCGWindowOwnerPID] as? Int) == Int(application.processIdentifier),
+                  (window[kCGWindowLayer] as? Int) == 0,
+                  let boundsDictionary = window[kCGWindowBounds] as? NSDictionary,
+                  let bounds = CGRect(
+                    dictionaryRepresentation: boundsDictionary as CFDictionary
+                  ) else {
+                return false
+            }
+            return screenSizes.contains { screenSize in
+                abs(bounds.width - screenSize.width) <= 6
+                    && abs(bounds.height - screenSize.height) <= 6
+            }
+        }
+        guard hasFullScreenWindow else { return nil }
+        return application.localizedName ?? "A full-screen app"
     }
 
     private func retireCurrentVideoWindows() {
@@ -715,6 +946,7 @@ private final class DesktopVideoWindow: Identifiable {
     private var restartAttempts = 0
     private var failureReported = false
     private var isRetiring = false
+    private var isPlaybackPaused = false
 
     init(
         screen: NSScreen,
@@ -773,6 +1005,7 @@ private final class DesktopVideoWindow: Identifiable {
             MainActor.assumeIsolated {
                 guard let self,
                       !self.isRetiring,
+                      !self.isPlaybackPaused,
                       self.owns(itemID) else { return }
                 self.player.play()
             }
@@ -825,7 +1058,7 @@ private final class DesktopVideoWindow: Identifiable {
     }
 
     private func verifyPlaybackIsAdvancing() {
-        guard !isRetiring else { return }
+        guard !isRetiring, !isPlaybackPaused else { return }
         if !window.isVisible {
             window.orderBack(nil)
         }
@@ -873,6 +1106,7 @@ private final class DesktopVideoWindow: Identifiable {
     }
 
     private func markPlayerUnready() {
+        guard !isPlaybackPaused else { return }
         unreadyChecks += 1
         player.play()
         if unreadyChecks >= 4 {
@@ -881,7 +1115,7 @@ private final class DesktopVideoWindow: Identifiable {
     }
 
     private func reportPlaybackFailure() {
-        guard !isRetiring, !failureReported else { return }
+        guard !isRetiring, !isPlaybackPaused, !failureReported else { return }
         failureReported = true
         onPlaybackFailure()
     }
@@ -896,12 +1130,12 @@ private final class DesktopVideoWindow: Identifiable {
     }
 
     private func restartPlayback() {
-        guard !isRetiring else { return }
+        guard !isRetiring, !isPlaybackPaused else { return }
         stagnantChecks = 0
         lastPlaybackTime = 0
         player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, !self.isRetiring else { return }
+                guard let self, !self.isRetiring, !self.isPlaybackPaused else { return }
                 self.player.play()
             }
         }
@@ -931,10 +1165,22 @@ private final class DesktopVideoWindow: Identifiable {
 
     func ensureVisibleAndPlaying() {
         guard !isRetiring else { return }
+        isPlaybackPaused = false
+        stagnantChecks = 0
+        lastPlaybackTime = player.currentTime().seconds
         if !window.isVisible {
             window.orderBack(nil)
         }
         player.play()
+    }
+
+    func pausePlayback() {
+        guard !isRetiring, !isPlaybackPaused else { return }
+        isPlaybackPaused = true
+        stagnantChecks = 0
+        unreadyChecks = 0
+        restartAttempts = 0
+        player.pause()
     }
 
     func setFillMode(_ fillMode: WallpaperController.FillMode) {
@@ -944,6 +1190,51 @@ private final class DesktopVideoWindow: Identifiable {
         case .fit: .resizeAspect
         case .stretch: .resize
         }
+    }
+}
+
+private struct SystemCPULoadSampler {
+    private struct Ticks {
+        let user: UInt64
+        let system: UInt64
+        let idle: UInt64
+        let nice: UInt64
+
+        var total: UInt64 { user + system + idle + nice }
+    }
+
+    private var previous: Ticks?
+
+    mutating func reset() {
+        previous = nil
+    }
+
+    mutating func sample() -> Double? {
+        var load = host_cpu_load_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<host_cpu_load_info_data_t>.stride / MemoryLayout<integer_t>.stride
+        )
+        let result = withUnsafeMutablePointer(to: &load) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+
+        let current = Ticks(
+            user: UInt64(load.cpu_ticks.0),
+            system: UInt64(load.cpu_ticks.1),
+            idle: UInt64(load.cpu_ticks.2),
+            nice: UInt64(load.cpu_ticks.3)
+        )
+        defer { previous = current }
+        guard let previous,
+              current.total >= previous.total,
+              current.idle >= previous.idle else { return nil }
+        let totalDelta = current.total - previous.total
+        guard totalDelta > 0 else { return nil }
+        let idleDelta = current.idle - previous.idle
+        return min(max(Double(totalDelta - idleDelta) / Double(totalDelta), 0), 1)
     }
 }
 

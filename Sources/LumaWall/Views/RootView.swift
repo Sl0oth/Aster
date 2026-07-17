@@ -838,6 +838,58 @@ private struct CanvasInspector: View {
             .padding(12)
             .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
 
+            DisclosureGroup("Smart Pause") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(
+                        "Pause when another app is full screen",
+                        isOn: $controller.pauseMotionForFullScreenApps
+                    )
+                    Toggle(
+                        "Pause during high system load",
+                        isOn: $controller.pauseMotionForHighSystemLoad
+                    )
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("CPU threshold")
+                            Spacer()
+                            Text("\(Int(controller.highSystemLoadThreshold))%")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(
+                            value: $controller.highSystemLoadThreshold,
+                            in: 50...95,
+                            step: 5
+                        )
+                        Text("Pauses after sustained load and resumes below \(max(Int(controller.highSystemLoadThreshold) - 10, 0))%.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .disabled(!controller.pauseMotionForHighSystemLoad)
+                    .opacity(controller.pauseMotionForHighSystemLoad ? 1 : 0.5)
+                    Toggle(
+                        "Pause while Low Power Mode is on",
+                        isOn: $controller.pauseMotionInLowPowerMode
+                    )
+                    Label(
+                        controller.smartPauseStatusMessage,
+                        systemImage: controller.isMotionWallpaperPaused
+                            ? "pause.circle.fill"
+                            : "gauge.with.dots.needle.33percent"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(
+                        controller.isMotionWallpaperPaused
+                            ? Color.asterPurple
+                            : Color.white.opacity(0.38)
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .toggleStyle(.switch)
+                .padding(.top, 8)
+            }
+            .font(.subheadline)
+
             DisclosureGroup("Playback & launch") {
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle("Resume motion wallpaper when Aster opens", isOn: $controller.autoResumeMotionWallpaper)

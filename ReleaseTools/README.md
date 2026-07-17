@@ -40,8 +40,8 @@ The workflow requires only the update-signing secret and public-key variable. It
 
 ```bash
 ASTER_RELEASE_MODE=community \
-ASTER_VERSION=1.0.0-beta.5 \
-ASTER_BUILD=5 \
+ASTER_VERSION=1.0.0-beta.6 \
+ASTER_BUILD=6 \
 ASTER_UPDATE_FEED_URL=https://raw.githubusercontent.com/Sl0oth/Aster/main/releases/stable.json \
 ASTER_UPDATE_PUBLIC_KEY="$ASTER_UPDATE_PUBLIC_KEY" \
 ReleaseTools/build-release.sh
@@ -58,7 +58,7 @@ If the project later joins the Apple Developer Program, production mode remains 
 ```bash
 ASTER_RELEASE_MODE=production \
 ASTER_VERSION=1.0.0 \
-ASTER_BUILD=5 \
+ASTER_BUILD=6 \
 ASTER_UPDATE_FEED_URL=https://raw.githubusercontent.com/Sl0oth/Aster/main/releases/stable.json \
 ASTER_UPDATE_PUBLIC_KEY="$ASTER_UPDATE_PUBLIC_KEY" \
 ASTER_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \

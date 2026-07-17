@@ -30,7 +30,7 @@ jobs:
         run: |
           export ASTER_RELEASE_MODE=community
           export ASTER_VERSION="$(jq -r '.version' Sources/LumaWall/Resources/ReleaseNotes.json)"
-          export ASTER_BUILD=5
+          export ASTER_BUILD=6
           export ASTER_UPDATE_FEED_URL="$(jq -r '.feedURL' Sources/LumaWall/Resources/ReleaseConfiguration.json)"
           export ASTER_UPDATE_PUBLIC_KEY="$(jq -r '.publicKey' Sources/LumaWall/Resources/ReleaseConfiguration.json)"
           ReleaseTools/build-release.sh

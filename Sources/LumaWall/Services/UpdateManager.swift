@@ -100,8 +100,8 @@ final class UpdateManager {
 
     init() {
         currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "1.0.0-beta.5"
-        currentBuild = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "5") ?? 5
+            ?? "1.0.0-beta.6"
+        currentBuild = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "6") ?? 6
         automaticallyChecksForUpdates = defaults.object(forKey: Keys.automaticChecks) as? Bool ?? true
         let configuration = Self.loadReleaseConfiguration()
         feedURL = configuration.feedURL

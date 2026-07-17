@@ -5,6 +5,7 @@ import XCTest
 final class ReleaseTests: XCTestCase {
     func testSemanticVersionOrdering() throws {
         XCTAssertGreaterThan(try version("1.0.0"), try version("1.0.0-beta.9"))
+        XCTAssertGreaterThan(try version("1.0.0-beta.6"), try version("1.0.0-beta.5"))
         XCTAssertGreaterThan(try version("1.0.0-beta.5"), try version("1.0.0-beta.4"))
         XCTAssertGreaterThan(try version("1.0.0-beta.4"), try version("1.0.0-beta.3"))
         XCTAssertGreaterThan(try version("1.0.0-beta.3"), try version("1.0.0-beta.2"))
@@ -16,7 +17,7 @@ final class ReleaseTests: XCTestCase {
 
     func testBundledReleaseNotesAreComplete() throws {
         let notes = try XCTUnwrap(AsterBundledReleaseNotes.load())
-        XCTAssertEqual(notes.version, "1.0.0-beta.5")
+        XCTAssertEqual(notes.version, "1.0.0-beta.6")
         XCTAssertFalse(notes.headline.isEmpty)
         XCTAssertFalse(notes.summary.isEmpty)
         XCTAssertFalse(notes.features.isEmpty)
@@ -278,6 +279,79 @@ final class ReleaseTests: XCTestCase {
 
         defaults.set(false, forKey: "Aster.Canvas.autoResumeMotion")
         XCTAssertFalse(WallpaperController(defaults: defaults).autoResumeMotionWallpaper)
+    }
+
+    @MainActor
+    func testSmartPauseDefaultsAndPersistedSettings() throws {
+        let suiteName = "AsterTests.SmartPause.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let defaultsController = WallpaperController(defaults: defaults)
+        XCTAssertTrue(defaultsController.pauseMotionForFullScreenApps)
+        XCTAssertTrue(defaultsController.pauseMotionForHighSystemLoad)
+        XCTAssertEqual(defaultsController.highSystemLoadThreshold, 80)
+        XCTAssertTrue(defaultsController.pauseMotionInLowPowerMode)
+
+        defaults.set(false, forKey: "Aster.Canvas.smartPause.fullScreenApps")
+        defaults.set(false, forKey: "Aster.Canvas.smartPause.highSystemLoad")
+        defaults.set(65.0, forKey: "Aster.Canvas.smartPause.highSystemLoadThreshold")
+        defaults.set(false, forKey: "Aster.Canvas.smartPause.lowPowerMode")
+        let customizedController = WallpaperController(defaults: defaults)
+        XCTAssertFalse(customizedController.pauseMotionForFullScreenApps)
+        XCTAssertFalse(customizedController.pauseMotionForHighSystemLoad)
+        XCTAssertEqual(customizedController.highSystemLoadThreshold, 65)
+        XCTAssertFalse(customizedController.pauseMotionInLowPowerMode)
+    }
+
+    func testSmartPausePolicySelectsEnabledResourceCondition() {
+        XCTAssertEqual(
+            WallpaperController.motionPauseReason(
+                pauseForFullScreenApps: true,
+                fullScreenApplicationName: "Final Cut Pro",
+                pauseForHighSystemLoad: true,
+                isHighSystemLoad: true,
+                systemLoadPercent: 88,
+                pauseInLowPowerMode: true,
+                isLowPowerModeEnabled: true
+            ),
+            .fullScreenApplication("Final Cut Pro")
+        )
+        XCTAssertEqual(
+            WallpaperController.motionPauseReason(
+                pauseForFullScreenApps: false,
+                fullScreenApplicationName: "Final Cut Pro",
+                pauseForHighSystemLoad: true,
+                isHighSystemLoad: true,
+                systemLoadPercent: 88,
+                pauseInLowPowerMode: false,
+                isLowPowerModeEnabled: false
+            ),
+            .highSystemLoad(88)
+        )
+        XCTAssertEqual(
+            WallpaperController.motionPauseReason(
+                pauseForFullScreenApps: false,
+                fullScreenApplicationName: nil,
+                pauseForHighSystemLoad: false,
+                isHighSystemLoad: false,
+                systemLoadPercent: nil,
+                pauseInLowPowerMode: true,
+                isLowPowerModeEnabled: true
+            ),
+            .lowPowerMode
+        )
+        XCTAssertNil(
+            WallpaperController.motionPauseReason(
+                pauseForFullScreenApps: false,
+                fullScreenApplicationName: "Ignored",
+                pauseForHighSystemLoad: false,
+                isHighSystemLoad: true,
+                systemLoadPercent: 99,
+                pauseInLowPowerMode: false,
+                isLowPowerModeEnabled: true
+            )
+        )
     }
 
     func testManualLockScreenAcceptsOnlyStillImages() {
