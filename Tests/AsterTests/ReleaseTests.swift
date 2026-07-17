@@ -17,7 +17,8 @@ final class ReleaseTests: XCTestCase {
 
     func testBundledReleaseNotesAreComplete() throws {
         let notes = try XCTUnwrap(AsterBundledReleaseNotes.load())
-        XCTAssertEqual(notes.version, "1.0.0-beta.1")
+        XCTAssertEqual(notes.version, "1.0.0-beta.2")
+        XCTAssertEqual(notes.build, 2)
         XCTAssertFalse(notes.headline.isEmpty)
         XCTAssertFalse(notes.summary.isEmpty)
         XCTAssertFalse(notes.features.isEmpty)
@@ -291,17 +292,17 @@ final class ReleaseTests: XCTestCase {
         XCTAssertTrue(defaultsController.pauseMotionForFullScreenApps)
         XCTAssertTrue(defaultsController.pauseMotionForHighSystemLoad)
         XCTAssertEqual(defaultsController.highSystemLoadThreshold, 80)
-        XCTAssertTrue(defaultsController.pauseMotionInLowPowerMode)
+        XCTAssertFalse(defaultsController.pauseMotionInLowPowerMode)
 
         defaults.set(false, forKey: "Aster.Canvas.smartPause.fullScreenApps")
         defaults.set(false, forKey: "Aster.Canvas.smartPause.highSystemLoad")
         defaults.set(65.0, forKey: "Aster.Canvas.smartPause.highSystemLoadThreshold")
-        defaults.set(false, forKey: "Aster.Canvas.smartPause.lowPowerMode")
+        defaults.set(true, forKey: "Aster.Canvas.smartPause.lowPowerMode")
         let customizedController = WallpaperController(defaults: defaults)
         XCTAssertFalse(customizedController.pauseMotionForFullScreenApps)
         XCTAssertFalse(customizedController.pauseMotionForHighSystemLoad)
         XCTAssertEqual(customizedController.highSystemLoadThreshold, 65)
-        XCTAssertFalse(customizedController.pauseMotionInLowPowerMode)
+        XCTAssertTrue(customizedController.pauseMotionInLowPowerMode)
     }
 
     func testSmartPausePolicySelectsEnabledResourceCondition() {
@@ -352,6 +353,73 @@ final class ReleaseTests: XCTestCase {
                 isLowPowerModeEnabled: true
             )
         )
+    }
+
+    func testSmartPauseMatchesFullscreenWindowToOnlyCoveredDisplay() {
+        let displays = [
+            WallpaperController.DisplayGeometry(
+                id: 1,
+                frame: CGRect(x: 0, y: 0, width: 1920, height: 1080)
+            ),
+            WallpaperController.DisplayGeometry(
+                id: 2,
+                frame: CGRect(x: 1920, y: 0, width: 1920, height: 1080)
+            )
+        ]
+
+        XCTAssertEqual(
+            WallpaperController.coveredDisplayID(
+                for: CGRect(x: 1920, y: 0, width: 1920, height: 1080),
+                displays: displays
+            ),
+            2
+        )
+        XCTAssertNil(
+            WallpaperController.coveredDisplayID(
+                for: CGRect(x: 2050, y: 80, width: 1200, height: 800),
+                displays: displays
+            )
+        )
+    }
+
+    func testSmartPauseRecognizesSplitViewButNotVisibleDesktop() {
+        let display = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let splitViewWindows = [
+            CGRect(x: 0, y: 0, width: 960, height: 1080),
+            CGRect(x: 960, y: 0, width: 960, height: 1080)
+        ]
+        let ordinaryWindows = [
+            CGRect(x: 80, y: 80, width: 1200, height: 800),
+            CGRect(x: 1320, y: 240, width: 520, height: 700)
+        ]
+
+        XCTAssertTrue(WallpaperController.isDisplayCovered(display, by: splitViewWindows))
+        XCTAssertFalse(WallpaperController.isDisplayCovered(display, by: ordinaryWindows))
+    }
+
+    func testSmartPauseScopesFullscreenAndResourcePausesCorrectly() {
+        let coveredDisplays: Set<CGDirectDisplayID> = [2]
+
+        XCTAssertFalse(WallpaperController.shouldPauseDisplay(
+            1,
+            hasGlobalPause: false,
+            coveredDisplayIDs: coveredDisplays
+        ))
+        XCTAssertTrue(WallpaperController.shouldPauseDisplay(
+            2,
+            hasGlobalPause: false,
+            coveredDisplayIDs: coveredDisplays
+        ))
+        XCTAssertTrue(WallpaperController.shouldPauseDisplay(
+            1,
+            hasGlobalPause: true,
+            coveredDisplayIDs: []
+        ))
+        XCTAssertTrue(WallpaperController.shouldPauseDisplay(
+            2,
+            hasGlobalPause: true,
+            coveredDisplayIDs: []
+        ))
     }
 
     func testManualLockScreenAcceptsOnlyStillImages() {

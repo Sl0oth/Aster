@@ -40,7 +40,7 @@ Group real third-party menu-bar icons behind Aster, then hide or reveal them wit
 
 ## Modules
 
-- **Canvas** — Import, preview, organize, and independently assign still images, GIFs, or looping videos to the Desktop, Lock Screen, and Screen Saver. Includes a full-bleed editor, filtering, sorting, drag-and-drop import, destination badges, timed shuffle, and motion auto-resume.
+- **Canvas** — Import, preview, organize, and independently assign still images, GIFs, or looping videos to the Desktop, Lock Screen, and Screen Saver. Includes a full-bleed editor, filtering, sorting, drag-and-drop import, destination badges, timed shuffle, motion auto-resume, and per-display Smart Pause when app windows cover the desktop.
 - **Clips** — Keep an opt-in, local clipboard history with search, persistent boards, drag-and-drop, source-app labels, and password-manager exclusions.
 - **Shelf** — Open a configurable, hover-activated notch panel for the utilities you want close at hand.
 - **Bar** — Collapse and reveal native third-party menu-bar items while preserving their arrangement across launches.

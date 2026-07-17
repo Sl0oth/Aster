@@ -31,6 +31,7 @@ struct AsterReleaseEnvelope: Codable {
 
 struct AsterBundledReleaseNotes: Codable {
     let version: String
+    let build: Int
     let headline: String
     let summary: String
     let features: [AsterReleaseFeature]
@@ -100,8 +101,8 @@ final class UpdateManager {
 
     init() {
         currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "1.0.0-beta.1"
-        currentBuild = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1") ?? 1
+            ?? "1.0.0-beta.2"
+        currentBuild = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "2") ?? 2
         automaticallyChecksForUpdates = defaults.object(forKey: Keys.automaticChecks) as? Bool ?? true
         let configuration = Self.loadReleaseConfiguration()
         feedURL = configuration.feedURL

@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${ASTER_VERSION:-1.0.0-beta.1}"
-BUILD="${ASTER_BUILD:-1}"
-FEED_URL="${ASTER_UPDATE_FEED_URL:-}"
-PUBLIC_KEY="${ASTER_UPDATE_PUBLIC_KEY:-}"
+NOTES="$ROOT/Sources/LumaWall/Resources/ReleaseNotes.json"
+CONFIGURATION="$ROOT/Sources/LumaWall/Resources/ReleaseConfiguration.json"
+VERSION="${ASTER_VERSION:-$(/usr/bin/jq -er '.version' "$NOTES")}"
+BUILD="${ASTER_BUILD:-$(/usr/bin/jq -er '.build' "$NOTES")}"
+FEED_URL="${ASTER_UPDATE_FEED_URL:-$(/usr/bin/jq -er '.feedURL' "$CONFIGURATION")}"
+PUBLIC_KEY="${ASTER_UPDATE_PUBLIC_KEY:-$(/usr/bin/jq -er '.publicKey' "$CONFIGURATION")}"
 SIGNING_IDENTITY="${ASTER_CODESIGN_IDENTITY:-}"
 NOTARY_PROFILE="${ASTER_NOTARY_PROFILE:-}"
 RELEASE_MODE="${ASTER_RELEASE_MODE:-production}"
@@ -47,9 +49,14 @@ fi
     exit 1
 }
 
-NOTES_VERSION="$(/usr/bin/jq -er '.version' "$ROOT/Sources/LumaWall/Resources/ReleaseNotes.json")"
+NOTES_VERSION="$(/usr/bin/jq -er '.version' "$NOTES")"
+NOTES_BUILD="$(/usr/bin/jq -er '.build' "$NOTES")"
 if [[ "$NOTES_VERSION" != "$VERSION" ]]; then
     print -u2 "ReleaseNotes.json is for $NOTES_VERSION, but ASTER_VERSION is $VERSION."
+    exit 1
+fi
+if [[ "$NOTES_BUILD" != "$BUILD" ]]; then
+    print -u2 "ReleaseNotes.json is build $NOTES_BUILD, but ASTER_BUILD is $BUILD."
     exit 1
 fi
 
