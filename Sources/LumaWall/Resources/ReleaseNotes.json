@@ -1,26 +1,26 @@
 {
-  "version": "1.0.0-beta.2",
-  "build": 2,
-  "headline": "Smarter motion wallpaper pausing",
-  "summary": "Canvas now keeps motion playing anywhere the desktop is visible and pauses only displays covered by full-screen apps or Split View. Low Power Mode pausing is optional, while sustained high CPU usage still protects the whole Mac.",
+  "version": "1.0.0-beta.3",
+  "build": 3,
+  "headline": "Screen Saver protection that keeps moving",
+  "summary": "Aster can now rotate through every background in your Canvas library without repeating one until the full set has played. Configurable pixel shifting adds another layer of protection for displays that stay on for long periods.",
   "features": [
     {
-      "id": "full-screen-smart-pause",
-      "title": "Pause only covered displays",
-      "description": "Canvas pauses motion on the display occupied by a full-screen app while visible desktops on other displays keep animating.",
+      "id": "screen-saver-canvas-rotation",
+      "title": "Rotate the whole Canvas library",
+      "description": "The Screen Saver uses a shuffled queue of every current Canvas background, completing the set before anything repeats.",
+      "symbol": "rectangle.stack.badge.play"
+    },
+    {
+      "id": "screen-saver-live-library",
+      "title": "Stays in sync",
+      "description": "Importing or removing a Canvas item updates the installed Screen Saver playlist automatically the next time it runs.",
+      "symbol": "arrow.triangle.2.circlepath"
+    },
+    {
+      "id": "screen-saver-pixel-shift",
+      "title": "Pixel shifting",
+      "description": "Overscanned Screen Saver content moves gently at your chosen interval so bright details do not remain on the same pixels.",
       "symbol": "arrow.up.left.and.arrow.down.right"
-    },
-    {
-      "id": "split-view-smart-pause",
-      "title": "Split View aware",
-      "description": "Two apps covering a display in Split View now pause that display too, then playback resumes when the desktop becomes visible.",
-      "symbol": "rectangle.split.2x1"
-    },
-    {
-      "id": "low-power-smart-pause",
-      "title": "Resource controls without surprises",
-      "description": "Sustained high CPU usage can pause all motion playback. Low Power Mode pausing remains available but is now off by default.",
-      "symbol": "leaf.fill"
     }
   ]
 }

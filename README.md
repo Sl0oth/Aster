@@ -121,7 +121,7 @@ macOS has no public API for arbitrary video wallpapers. Aster displays looping v
 
 ### Screen Saver and Lock Screen
 
-Canvas can install its native `Aster.saver` module in `~/Library/Screen Savers`. Desktop, Lock Screen, and Screen Saver assignments are stored separately. Desktop and Screen Saver accept still or motion media. macOS allows only a still image on the secure Lock Screen, so Aster disables video and GIF selections for that destination and stores the chosen still in the system desktop layer.
+Canvas can install its native `Aster.saver` module in `~/Library/Screen Savers`. Desktop, Lock Screen, and Screen Saver assignments are stored separately. Desktop and Screen Saver accept still or motion media. Screen Saver protection can cycle through every item in the live Canvas library without repeating one until the set has rotated, and optional pixel shifting moves overscanned content so bright details do not remain on the same display pixels. Both intervals are configurable and can be turned off. macOS allows only a still image on the secure Lock Screen, so Aster disables video and GIF selections for that destination and stores the chosen still in the system desktop layer.
 
 ## License
 

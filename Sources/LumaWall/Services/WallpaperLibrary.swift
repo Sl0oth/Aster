@@ -127,5 +127,6 @@ final class WallpaperLibrary {
     private func save() {
         guard let data = try? JSONEncoder().encode(items) else { return }
         try? data.write(to: metadataURL, options: .atomic)
+        try? ScreenSaverInstaller.synchronizeCanvasPlaylistIfInstalled()
     }
 }

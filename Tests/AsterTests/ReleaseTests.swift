@@ -1,6 +1,7 @@
 import CryptoKit
 import XCTest
 @testable import Aster
+@testable import AsterScreenSaver
 
 final class ReleaseTests: XCTestCase {
     func testSemanticVersionOrdering() throws {
@@ -17,8 +18,8 @@ final class ReleaseTests: XCTestCase {
 
     func testBundledReleaseNotesAreComplete() throws {
         let notes = try XCTUnwrap(AsterBundledReleaseNotes.load())
-        XCTAssertEqual(notes.version, "1.0.0-beta.2")
-        XCTAssertEqual(notes.build, 2)
+        XCTAssertEqual(notes.version, "1.0.0-beta.3")
+        XCTAssertEqual(notes.build, 3)
         XCTAssertFalse(notes.headline.isEmpty)
         XCTAssertFalse(notes.summary.isEmpty)
         XCTAssertFalse(notes.features.isEmpty)
@@ -303,6 +304,83 @@ final class ReleaseTests: XCTestCase {
         XCTAssertFalse(customizedController.pauseMotionForHighSystemLoad)
         XCTAssertEqual(customizedController.highSystemLoadThreshold, 65)
         XCTAssertTrue(customizedController.pauseMotionInLowPowerMode)
+    }
+
+    @MainActor
+    func testScreenSaverPixelShiftDefaultsOnAndHonorsSavedChoice() throws {
+        let suiteName = "AsterTests.ScreenSaverShift.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(
+            WallpaperController(defaults: defaults).screenSaverShiftInterval,
+            .oneMinute
+        )
+
+        defaults.set(0.0, forKey: "Aster.Canvas.screenSaverPixelShiftInterval")
+        XCTAssertEqual(
+            WallpaperController(defaults: defaults).screenSaverShiftInterval,
+            .off
+        )
+
+        defaults.set(300.0, forKey: "Aster.Canvas.screenSaverPixelShiftInterval")
+        XCTAssertEqual(
+            WallpaperController(defaults: defaults).screenSaverShiftInterval,
+            .fiveMinutes
+        )
+    }
+
+    @MainActor
+    func testScreenSaverCanvasRotationDefaultsOnAndHonorsSavedChoice() throws {
+        let suiteName = "AsterTests.ScreenSaverRotation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(
+            WallpaperController(defaults: defaults).screenSaverRotationInterval,
+            .fiveMinutes
+        )
+
+        defaults.set(0.0, forKey: "Aster.Canvas.screenSaverRotationInterval")
+        XCTAssertEqual(
+            WallpaperController(defaults: defaults).screenSaverRotationInterval,
+            .off
+        )
+
+        defaults.set(60.0, forKey: "Aster.Canvas.screenSaverRotationInterval")
+        XCTAssertEqual(
+            WallpaperController(defaults: defaults).screenSaverRotationInterval,
+            .oneMinute
+        )
+    }
+
+    @MainActor
+    func testScreenSaverPixelShiftMovesOverscannedContentWithoutExposingEdges() {
+        let bounds = CGRect(x: 0, y: 0, width: 1_920, height: 1_080)
+        let fixedFrame = AsterScreenSaverView.pixelShiftFrame(
+            in: bounds,
+            enabled: false,
+            positionIndex: 0
+        )
+        let centeredFrame = AsterScreenSaverView.pixelShiftFrame(
+            in: bounds,
+            enabled: true,
+            positionIndex: 0
+        )
+        let shiftedFrame = AsterScreenSaverView.pixelShiftFrame(
+            in: bounds,
+            enabled: true,
+            positionIndex: 1
+        )
+
+        XCTAssertEqual(fixedFrame, bounds)
+        XCTAssertNotEqual(centeredFrame, shiftedFrame)
+        for frame in [centeredFrame, shiftedFrame] {
+            XCTAssertLessThanOrEqual(frame.minX, bounds.minX)
+            XCTAssertLessThanOrEqual(frame.minY, bounds.minY)
+            XCTAssertGreaterThanOrEqual(frame.maxX, bounds.maxX)
+            XCTAssertGreaterThanOrEqual(frame.maxY, bounds.maxY)
+        }
     }
 
     func testSmartPausePolicySelectsEnabledResourceCondition() {

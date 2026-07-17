@@ -8,7 +8,7 @@ enum ScreenSaverInstaller {
         case lockScreen
     }
 
-    private struct MediaConfiguration: Codable {
+    private struct MediaConfiguration: Codable, Equatable {
         let mediaPath: String?
         let mediaFilename: String?
         let mediaKind: String
@@ -19,6 +19,14 @@ enum ScreenSaverInstaller {
     private struct Configuration: Codable {
         var screenSaver: MediaConfiguration
         var lockScreen: MediaConfiguration
+        var pixelShiftInterval: TimeInterval?
+        var rotationInterval: TimeInterval?
+        var playlist: [MediaConfiguration]?
+    }
+
+    private struct CanvasWallpaper: Decodable {
+        let filename: String
+        let kind: WallpaperItem.Kind
     }
 
     private struct LegacyConfiguration: Decodable {
@@ -43,6 +51,7 @@ enum ScreenSaverInstaller {
         case moduleNotBuilt
         case signingFailed
         case configurationMissing
+        case playlistSyncFailed
 
         var errorDescription: String? {
             switch self {
@@ -52,6 +61,8 @@ enum ScreenSaverInstaller {
                 "macOS could not prepare the Aster Screen Saver module."
             case .configurationMissing:
                 "Aster could not read the installed Screen Saver configuration."
+            case .playlistSyncFailed:
+                "Aster could not synchronize the Canvas library with the Screen Saver."
             }
         }
     }
@@ -66,8 +77,21 @@ enum ScreenSaverInstaller {
             contentsOf: moduleFingerprintURL(in: installedBundleURL),
             encoding: .utf8
         )
-        guard installedFingerprint != (try moduleFingerprint(for: builtModuleURL)) else { return }
-        try refreshInstalledModule()
+        var changed = false
+        if installedFingerprint != (try moduleFingerprint(for: builtModuleURL)) {
+            try refreshInstalledModule()
+            changed = true
+        }
+        if var configuration = readConfiguration(in: installedBundleURL),
+           try synchronizeCanvasPlaylist(in: installedBundleURL, configuration: &configuration) {
+            try write(configuration, in: installedBundleURL)
+            removeUnusedMedia(
+                in: resourcesURL(in: installedBundleURL),
+                keeping: configuration
+            )
+            changed = true
+        }
+        guard changed else { return }
         try sign(installedBundleURL)
         reloadScreenSaverHost()
     }
@@ -77,14 +101,18 @@ enum ScreenSaverInstaller {
         mediaURL: URL,
         mediaKind: WallpaperItem.Kind,
         fillMode: WallpaperController.FillMode,
-        muted: Bool
+        muted: Bool,
+        pixelShiftInterval: TimeInterval = 60,
+        rotationInterval: TimeInterval = 300
     ) throws {
         try configure(
             destinations: [destination],
             mediaURL: mediaURL,
             mediaKind: mediaKind,
             fillMode: fillMode,
-            muted: muted
+            muted: muted,
+            pixelShiftInterval: pixelShiftInterval,
+            rotationInterval: rotationInterval
         )
     }
 
@@ -93,7 +121,9 @@ enum ScreenSaverInstaller {
         mediaURL: URL,
         mediaKind: WallpaperItem.Kind,
         fillMode: WallpaperController.FillMode,
-        muted: Bool
+        muted: Bool,
+        pixelShiftInterval: TimeInterval = 60,
+        rotationInterval: TimeInterval = 300
     ) throws {
         guard !destinations.isEmpty else { return }
         if isInstalled {
@@ -102,14 +132,18 @@ enum ScreenSaverInstaller {
                 mediaURL: mediaURL,
                 mediaKind: mediaKind,
                 fillMode: fillMode,
-                muted: muted
+                muted: muted,
+                pixelShiftInterval: pixelShiftInterval,
+                rotationInterval: rotationInterval
             )
         } else {
             try install(
                 mediaURL: mediaURL,
                 mediaKind: mediaKind,
                 fillMode: fillMode,
-                muted: muted
+                muted: muted,
+                pixelShiftInterval: pixelShiftInterval,
+                rotationInterval: rotationInterval
             )
         }
     }
@@ -118,7 +152,9 @@ enum ScreenSaverInstaller {
         mediaURL: URL,
         mediaKind: WallpaperItem.Kind,
         fillMode: WallpaperController.FillMode,
-        muted: Bool
+        muted: Bool,
+        pixelShiftInterval: TimeInterval,
+        rotationInterval: TimeInterval
     ) throws {
         guard let builtModuleURL else { throw InstallationError.moduleNotBuilt }
 
@@ -166,7 +202,18 @@ enum ScreenSaverInstaller {
             fillMode: fillMode,
             muted: muted
         )
-        try write(Configuration(screenSaver: media, lockScreen: media), in: temporaryBundle)
+        var configuration = Configuration(
+            screenSaver: media,
+            lockScreen: media,
+            pixelShiftInterval: pixelShiftInterval,
+            rotationInterval: rotationInterval,
+            playlist: nil
+        )
+        _ = try synchronizeCanvasPlaylist(
+            in: temporaryBundle,
+            configuration: &configuration
+        )
+        try write(configuration, in: temporaryBundle)
         try sign(temporaryBundle)
 
         try fileManager.createDirectory(
@@ -183,7 +230,9 @@ enum ScreenSaverInstaller {
         mediaURL: URL,
         mediaKind: WallpaperItem.Kind,
         fillMode: WallpaperController.FillMode,
-        muted: Bool
+        muted: Bool,
+        pixelShiftInterval: TimeInterval,
+        rotationInterval: TimeInterval
     ) throws {
         guard isInstalled else { throw InstallationError.moduleNotBuilt }
         guard var configuration = readConfiguration(in: installedBundleURL) else {
@@ -211,6 +260,12 @@ enum ScreenSaverInstaller {
             case .lockScreen: configuration.lockScreen = media
             }
         }
+        configuration.pixelShiftInterval = pixelShiftInterval
+        configuration.rotationInterval = rotationInterval
+        _ = try synchronizeCanvasPlaylist(
+            in: installedBundleURL,
+            configuration: &configuration
+        )
         try write(configuration, in: installedBundleURL)
         removeUnusedMedia(in: resources, keeping: configuration)
         try sign(installedBundleURL)
@@ -224,6 +279,123 @@ enum ScreenSaverInstaller {
         try FileManager.default.copyItem(at: builtModuleURL, to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         try writeModuleFingerprint(for: builtModuleURL, in: installedBundleURL)
+    }
+
+    static func setPixelShiftInterval(_ interval: TimeInterval) throws {
+        guard isInstalled else { return }
+        guard var configuration = readConfiguration(in: installedBundleURL) else {
+            throw InstallationError.configurationMissing
+        }
+        guard configuration.pixelShiftInterval != interval else { return }
+        configuration.pixelShiftInterval = interval
+        try write(configuration, in: installedBundleURL)
+        try sign(installedBundleURL)
+        reloadScreenSaverHost()
+    }
+
+    static func setRotationInterval(_ interval: TimeInterval) throws {
+        guard isInstalled else { return }
+        guard var configuration = readConfiguration(in: installedBundleURL) else {
+            throw InstallationError.configurationMissing
+        }
+        guard configuration.rotationInterval != interval else { return }
+        configuration.rotationInterval = interval
+        _ = try synchronizeCanvasPlaylist(
+            in: installedBundleURL,
+            configuration: &configuration
+        )
+        try write(configuration, in: installedBundleURL)
+        removeUnusedMedia(
+            in: resourcesURL(in: installedBundleURL),
+            keeping: configuration
+        )
+        try sign(installedBundleURL)
+        reloadScreenSaverHost()
+    }
+
+    static func synchronizeCanvasPlaylistIfInstalled() throws {
+        guard isInstalled else { return }
+        guard var configuration = readConfiguration(in: installedBundleURL) else {
+            throw InstallationError.configurationMissing
+        }
+        guard try synchronizeCanvasPlaylist(
+            in: installedBundleURL,
+            configuration: &configuration
+        ) else { return }
+        try write(configuration, in: installedBundleURL)
+        removeUnusedMedia(
+            in: resourcesURL(in: installedBundleURL),
+            keeping: configuration
+        )
+        try sign(installedBundleURL)
+        reloadScreenSaverHost()
+    }
+
+    private static func synchronizeCanvasPlaylist(
+        in bundle: URL,
+        configuration: inout Configuration
+    ) throws -> Bool {
+        let fileManager = FileManager.default
+        let support = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("Aster", isDirectory: true)
+        let library = support.appendingPathComponent("Library", isDirectory: true)
+        let metadataURL = support.appendingPathComponent("wallpapers.json")
+        guard let data = try? Data(contentsOf: metadataURL),
+              let wallpapers = try? JSONDecoder().decode([CanvasWallpaper].self, from: data) else {
+            return false
+        }
+
+        let libraryRoot = library.standardizedFileURL.path + "/"
+        let resources = resourcesURL(in: bundle)
+        var sources: [(URL, MediaConfiguration)] = []
+        for wallpaper in wallpapers {
+            let source = library.appendingPathComponent(wallpaper.filename).standardizedFileURL
+            guard source.path.hasPrefix(libraryRoot),
+                  fileManager.fileExists(atPath: source.path) else { continue }
+            let filename = "canvas-\(wallpaper.filename)"
+            sources.append((
+                source,
+                MediaConfiguration(
+                    mediaPath: nil,
+                    mediaFilename: filename,
+                    mediaKind: wallpaper.kind.rawValue,
+                    fillMode: configuration.screenSaver.fillMode,
+                    muted: configuration.screenSaver.muted
+                )
+            ))
+        }
+
+        let expected = sources.map(\.1)
+        let allLinksExist = expected.allSatisfy { media in
+            guard let filename = media.mediaFilename else { return false }
+            return fileManager.fileExists(
+                atPath: resources.appendingPathComponent(filename).path
+            )
+        }
+        guard configuration.playlist != expected || !allLinksExist else { return false }
+
+        try fileManager.createDirectory(at: resources, withIntermediateDirectories: true)
+        for file in (try? fileManager.contentsOfDirectory(
+            at: resources,
+            includingPropertiesForKeys: nil
+        )) ?? [] where file.lastPathComponent.hasPrefix("canvas-") {
+            try? fileManager.removeItem(at: file)
+        }
+        for (source, media) in sources {
+            guard let filename = media.mediaFilename else { continue }
+            do {
+                try fileManager.linkItem(
+                    at: source,
+                    to: resources.appendingPathComponent(filename)
+                )
+            } catch {
+                throw InstallationError.playlistSyncFailed
+            }
+        }
+        configuration.playlist = expected
+        return true
     }
 
     private static func copyMedia(
@@ -257,7 +429,13 @@ enum ScreenSaverInstaller {
             return current
         }
         if let legacy = try? JSONDecoder().decode(LegacyConfiguration.self, from: data) {
-            return Configuration(screenSaver: legacy.media, lockScreen: legacy.media)
+            return Configuration(
+                screenSaver: legacy.media,
+                lockScreen: legacy.media,
+                pixelShiftInterval: nil,
+                rotationInterval: nil,
+                playlist: nil
+            )
         }
         return nil
     }
@@ -271,12 +449,13 @@ enum ScreenSaverInstaller {
     }
 
     private static func removeUnusedMedia(in resources: URL, keeping configuration: Configuration) {
-        let keep = Set([
+        var keep = Set([
             configuration.screenSaver.mediaFilename,
             configuration.lockScreen.mediaFilename,
             "configuration.json",
             "runtime.sha256"
         ].compactMap { $0 })
+        keep.formUnion(configuration.playlist?.compactMap(\.mediaFilename) ?? [])
         for file in (try? FileManager.default.contentsOfDirectory(
             at: resources,
             includingPropertiesForKeys: nil

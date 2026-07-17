@@ -26,7 +26,7 @@ let package = Package(
         ),
         .testTarget(
             name: "AsterTests",
-            dependencies: ["Aster"],
+            dependencies: ["Aster", "AsterScreenSaver"],
             path: "Tests/AsterTests"
         )
     ]

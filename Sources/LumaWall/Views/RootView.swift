@@ -912,6 +912,43 @@ private struct CanvasInspector: View {
             }
             .font(.subheadline)
 
+            DisclosureGroup("Screen Saver protection") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Label("Rotate Canvas backgrounds", systemImage: "rectangle.stack.badge.play")
+                        Spacer()
+                        Picker("Rotate Canvas backgrounds", selection: $controller.screenSaverRotationInterval) {
+                            ForEach(WallpaperController.ScreenSaverRotationInterval.allCases) { interval in
+                                Text(interval.label).tag(interval)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 150)
+                    }
+                    Text("Cycles through every background currently in your Canvas library without repeating one until the set has rotated. Choose Off to keep the selected saver fixed.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Label("Pixel shift", systemImage: "arrow.up.left.and.arrow.down.right")
+                        Spacer()
+                        Picker("Pixel shift", selection: $controller.screenSaverShiftInterval) {
+                            ForEach(WallpaperController.ScreenSaverShiftInterval.allCases) { interval in
+                                Text(interval.label).tag(interval)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 150)
+                    }
+                    Text("Slightly enlarges and moves Screen Saver content so bright details do not stay on the same pixels. Choose Off to keep it fixed.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 8)
+            }
+            .font(.subheadline)
+
             DisclosureGroup("Lock Screen details") {
                 VStack(alignment: .leading, spacing: 9) {
                     Label("Automatic lock uses Screen Saver", systemImage: "sparkles.rectangle.stack")

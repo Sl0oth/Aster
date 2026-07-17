@@ -63,6 +63,46 @@ final class WallpaperController {
         }
     }
 
+    enum ScreenSaverShiftInterval: Double, CaseIterable, Identifiable {
+        case off = 0
+        case thirtySeconds = 30
+        case oneMinute = 60
+        case twoMinutes = 120
+        case fiveMinutes = 300
+
+        var id: Double { rawValue }
+        var label: String {
+            switch self {
+            case .off: "Off"
+            case .thirtySeconds: "Every 30 seconds"
+            case .oneMinute: "Every minute"
+            case .twoMinutes: "Every 2 minutes"
+            case .fiveMinutes: "Every 5 minutes"
+            }
+        }
+    }
+
+    enum ScreenSaverRotationInterval: Double, CaseIterable, Identifiable {
+        case off = 0
+        case thirtySeconds = 30
+        case oneMinute = 60
+        case twoMinutes = 120
+        case fiveMinutes = 300
+        case fifteenMinutes = 900
+
+        var id: Double { rawValue }
+        var label: String {
+            switch self {
+            case .off: "Off"
+            case .thirtySeconds: "Every 30 seconds"
+            case .oneMinute: "Every minute"
+            case .twoMinutes: "Every 2 minutes"
+            case .fiveMinutes: "Every 5 minutes"
+            case .fifteenMinutes: "Every 15 minutes"
+            }
+        }
+    }
+
     enum MotionPauseReason: Equatable, Sendable {
         case fullScreenApplication(String)
         case highSystemLoad(Int)
@@ -106,6 +146,39 @@ final class WallpaperController {
     private(set) var screenSaverStatusMessage = "Auto-lock uses Screen Saver; manual lock uses the Lock Screen still"
     private(set) var lockScreenItemID: UUID?
     private(set) var screenSaverItemID: UUID?
+    var screenSaverShiftInterval: ScreenSaverShiftInterval = .oneMinute {
+        didSet {
+            guard screenSaverShiftInterval != oldValue else { return }
+            defaults.set(screenSaverShiftInterval.rawValue, forKey: screenSaverShiftIntervalKey)
+            guard managesInstalledScreenSaver, screenSaverIsInstalled else { return }
+            do {
+                try ScreenSaverInstaller.setPixelShiftInterval(screenSaverShiftInterval.rawValue)
+                screenSaverStatusMessage = screenSaverShiftInterval == .off
+                    ? "Screen Saver pixel shifting is off"
+                    : "Screen Saver shifts \(screenSaverShiftInterval.label.lowercased())"
+            } catch {
+                screenSaverStatusMessage = error.localizedDescription
+            }
+        }
+    }
+    var screenSaverRotationInterval: ScreenSaverRotationInterval = .fiveMinutes {
+        didSet {
+            guard screenSaverRotationInterval != oldValue else { return }
+            defaults.set(
+                screenSaverRotationInterval.rawValue,
+                forKey: screenSaverRotationIntervalKey
+            )
+            guard managesInstalledScreenSaver, screenSaverIsInstalled else { return }
+            do {
+                try ScreenSaverInstaller.setRotationInterval(screenSaverRotationInterval.rawValue)
+                screenSaverStatusMessage = screenSaverRotationInterval == .off
+                    ? "Screen Saver Canvas rotation is off"
+                    : "Screen Saver rotates Canvas backgrounds \(screenSaverRotationInterval.label.lowercased())"
+            } catch {
+                screenSaverStatusMessage = error.localizedDescription
+            }
+        }
+    }
     var editingDestination: CanvasDestination = .desktop {
         didSet { defaults.set(editingDestination.rawValue, forKey: destinationKey) }
     }
@@ -211,6 +284,7 @@ final class WallpaperController {
     private var activeItemURL: URL?
     private var activeItemKind: WallpaperItem.Kind?
     private let defaults: UserDefaults
+    private let managesInstalledScreenSaver: Bool
     private let enabledKey = "Aster.Canvas.enabled"
     private let autoResumeKey = "Aster.Canvas.autoResumeMotion"
     private let pauseForFullScreenAppsKey = "Aster.Canvas.smartPause.fullScreenApps"
@@ -221,6 +295,8 @@ final class WallpaperController {
     private let lastAppliedKey = "Aster.Canvas.lastAppliedWallpaper"
     private let lastMotionAppliedKey = "Aster.Canvas.lastMotionWallpaper"
     private let screenSaverConfiguredKey = "Aster.Canvas.screenSaverConfigured"
+    private let screenSaverShiftIntervalKey = "Aster.Canvas.screenSaverPixelShiftInterval"
+    private let screenSaverRotationIntervalKey = "Aster.Canvas.screenSaverRotationInterval"
     private let lockScreenItemKey = "Aster.Canvas.lockScreenWallpaper"
     private let screenSaverItemKey = "Aster.Canvas.screenSaverWallpaper"
     private let destinationKey = "Aster.Canvas.editingDestination"
@@ -229,8 +305,13 @@ final class WallpaperController {
     private let shuffleRunningKey = "Aster.Canvas.shuffleRunning"
     private let shuffleNextDateKey = "Aster.Canvas.shuffleNextDate"
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        managesInstalledScreenSaver: Bool? = nil
+    ) {
         self.defaults = defaults
+        self.managesInstalledScreenSaver = managesInstalledScreenSaver
+            ?? (defaults === UserDefaults.standard)
         isEnabled = defaults.object(forKey: enabledKey) as? Bool ?? true
         refreshLaunchAtLoginStatus()
         autoResumeMotionWallpaper = defaults.object(forKey: autoResumeKey) as? Bool ?? true
@@ -239,9 +320,22 @@ final class WallpaperController {
         let storedLoadThreshold = defaults.object(forKey: highSystemLoadThresholdKey) as? Double ?? 80
         highSystemLoadThreshold = min(max(storedLoadThreshold, 50), 95)
         pauseMotionInLowPowerMode = defaults.object(forKey: pauseInLowPowerModeKey) as? Bool ?? false
-        screenSaverIsInstalled = ScreenSaverInstaller.isInstalled
+        screenSaverIsInstalled = self.managesInstalledScreenSaver
+            && ScreenSaverInstaller.isInstalled
         screenSaverIsConfigured = defaults.bool(forKey: screenSaverConfiguredKey)
             && screenSaverIsInstalled
+        if let storedShiftInterval = defaults.object(
+            forKey: screenSaverShiftIntervalKey
+        ) as? Double,
+           let shiftInterval = ScreenSaverShiftInterval(rawValue: storedShiftInterval) {
+            screenSaverShiftInterval = shiftInterval
+        }
+        if let storedRotationInterval = defaults.object(
+            forKey: screenSaverRotationIntervalKey
+        ) as? Double,
+           let rotationInterval = ScreenSaverRotationInterval(rawValue: storedRotationInterval) {
+            screenSaverRotationInterval = rotationInterval
+        }
         if screenSaverIsConfigured {
             screenSaverStatusMessage = "Screen Saver also continues through automatic lock"
         }
@@ -628,7 +722,9 @@ final class WallpaperController {
                 mediaURL: url,
                 mediaKind: item.kind,
                 fillMode: fillMode,
-                muted: muted
+                muted: muted,
+                pixelShiftInterval: screenSaverShiftInterval.rawValue,
+                rotationInterval: screenSaverRotationInterval.rawValue
             )
             screenSaverIsInstalled = true
             screenSaverIsConfigured = true
