@@ -871,6 +871,9 @@ private struct CanvasInspector: View {
                         "Pause while Low Power Mode is on",
                         isOn: $controller.pauseMotionInLowPowerMode
                     )
+                    Text("Optional: leave this off to keep motion playing whenever the desktop is visible.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                     Label(
                         controller.smartPauseStatusMessage,
                         systemImage: controller.isMotionWallpaperPaused

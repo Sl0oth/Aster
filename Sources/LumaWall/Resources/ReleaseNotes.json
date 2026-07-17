@@ -1,24 +1,25 @@
 {
-  "version": "1.0.0-beta.1",
-  "headline": "Smart Pause for motion wallpapers",
-  "summary": "Canvas can now pause motion wallpaper decoding when another app is full screen, the Mac is under heavy CPU load, or Low Power Mode is enabled.",
+  "version": "1.0.0-beta.2",
+  "build": 2,
+  "headline": "Smarter motion wallpaper pausing",
+  "summary": "Canvas now keeps motion playing anywhere the desktop is visible and pauses only displays covered by full-screen apps or Split View. Low Power Mode pausing is optional, while sustained high CPU usage still protects the whole Mac.",
   "features": [
     {
       "id": "full-screen-smart-pause",
-      "title": "Pause behind full-screen apps",
-      "description": "Canvas automatically pauses motion wallpapers while another application occupies a full screen, then resumes afterward.",
+      "title": "Pause only covered displays",
+      "description": "Canvas pauses motion on the display occupied by a full-screen app while visible desktops on other displays keep animating.",
       "symbol": "arrow.up.left.and.arrow.down.right"
     },
     {
-      "id": "system-load-smart-pause",
-      "title": "Configurable CPU protection",
-      "description": "Choose a 50–95% system CPU threshold. Sustained load pauses playback and built-in hysteresis prevents rapid toggling.",
-      "symbol": "gauge.with.dots.needle.67percent"
+      "id": "split-view-smart-pause",
+      "title": "Split View aware",
+      "description": "Two apps covering a display in Split View now pause that display too, then playback resumes when the desktop becomes visible.",
+      "symbol": "rectangle.split.2x1"
     },
     {
       "id": "low-power-smart-pause",
-      "title": "Low Power Mode aware",
-      "description": "Motion wallpapers can stop decoding while Low Power Mode is active, while still-image wallpapers remain unaffected.",
+      "title": "Resource controls without surprises",
+      "description": "Sustained high CPU usage can pause all motion playback. Low Power Mode pausing remains available but is now off by default.",
       "symbol": "leaf.fill"
     }
   ]

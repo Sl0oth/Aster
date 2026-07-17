@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION="$(/usr/bin/jq -er '.version' "$ROOT/Sources/LumaWall/Resources/ReleaseNotes.json")"
+BUILD="$(/usr/bin/jq -er '.build' "$ROOT/Sources/LumaWall/Resources/ReleaseNotes.json")"
 cd "$ROOT"
 
 swift build -c debug
@@ -34,8 +36,8 @@ plutil -insert CFBundleName -string Aster "$INFO"
 plutil -insert CFBundleDisplayName -string Aster "$INFO"
 plutil -insert CFBundleIconFile -string Aster.icns "$INFO"
 plutil -insert CFBundlePackageType -string APPL "$INFO"
-plutil -insert CFBundleShortVersionString -string 1.0.0-beta.1 "$INFO"
-plutil -insert CFBundleVersion -string 1 "$INFO"
+plutil -insert CFBundleShortVersionString -string "$VERSION" "$INFO"
+plutil -insert CFBundleVersion -string "$BUILD" "$INFO"
 plutil -insert LSMinimumSystemVersion -string 14.0 "$INFO"
 plutil -insert LSArchitecturePriority -json '["arm64"]' "$INFO"
 plutil -insert LSMultipleInstancesProhibited -bool true "$INFO"

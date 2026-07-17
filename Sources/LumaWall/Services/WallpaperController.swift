@@ -80,6 +80,11 @@ final class WallpaperController {
         }
     }
 
+    struct DisplayGeometry: Equatable {
+        let id: CGDirectDisplayID
+        let frame: CGRect
+    }
+
     var isEnabled: Bool {
         didSet {
             guard isEnabled != oldValue else { return }
@@ -144,7 +149,7 @@ final class WallpaperController {
             evaluateSmartPausePolicy(samplesSystemLoad: false)
         }
     }
-    var pauseMotionInLowPowerMode = true {
+    var pauseMotionInLowPowerMode = false {
         didSet {
             guard pauseMotionInLowPowerMode != oldValue else { return }
             defaults.set(pauseMotionInLowPowerMode, forKey: pauseInLowPowerModeKey)
@@ -153,10 +158,17 @@ final class WallpaperController {
     }
     private(set) var motionPauseReason: MotionPauseReason?
     private(set) var currentSystemLoadPercent: Int?
-    var isMotionWallpaperPaused: Bool { motionPauseReason != nil }
+    private var globalMotionPauseReason: MotionPauseReason?
+    private var fullScreenDisplayApplications: [CGDirectDisplayID: String] = [:]
+    var isMotionWallpaperPaused: Bool {
+        globalMotionPauseReason != nil || !fullScreenDisplayApplications.isEmpty
+    }
     var smartPauseStatusMessage: String {
-        if let motionPauseReason {
-            return "Paused — \(motionPauseReason.message)"
+        if let globalMotionPauseReason {
+            return "Paused — \(globalMotionPauseReason.message)"
+        }
+        if !fullScreenDisplayApplications.isEmpty {
+            return fullScreenPauseMessage
         }
         if isAnimating, let currentSystemLoadPercent, pauseMotionForHighSystemLoad {
             return "Playing · System CPU usage \(currentSystemLoadPercent)%"
@@ -226,7 +238,7 @@ final class WallpaperController {
         pauseMotionForHighSystemLoad = defaults.object(forKey: pauseForHighSystemLoadKey) as? Bool ?? true
         let storedLoadThreshold = defaults.object(forKey: highSystemLoadThresholdKey) as? Double ?? 80
         highSystemLoadThreshold = min(max(storedLoadThreshold, 50), 95)
-        pauseMotionInLowPowerMode = defaults.object(forKey: pauseInLowPowerModeKey) as? Bool ?? true
+        pauseMotionInLowPowerMode = defaults.object(forKey: pauseInLowPowerModeKey) as? Bool ?? false
         screenSaverIsInstalled = ScreenSaverInstaller.isInstalled
         screenSaverIsConfigured = defaults.bool(forKey: screenSaverConfiguredKey)
             && screenSaverIsInstalled
@@ -433,6 +445,8 @@ final class WallpaperController {
         resetHighSystemLoadDetection()
         currentSystemLoadPercent = nil
         motionPauseReason = nil
+        globalMotionPauseReason = nil
+        fullScreenDisplayApplications.removeAll()
         isRecoveringPlayback = false
         retireCurrentVideoWindows()
         desktopInteractionWindows.forEach { $0.close() }
@@ -697,9 +711,7 @@ final class WallpaperController {
                 }
             }
         }
-        if isMotionWallpaperPaused {
-            videoWindows.forEach { $0.pausePlayback() }
-        }
+        applySmartPausePlaybackState()
     }
 
     private func observePlaybackLifecycle(url: URL) {
@@ -741,16 +753,17 @@ final class WallpaperController {
     private func resumeMotionWallpaper(url: URL) {
         guard isAnimating else { return }
         evaluateSmartPausePolicy(samplesSystemLoad: false)
-        guard !isMotionWallpaperPaused else { return }
         guard !videoWindows.isEmpty else {
-            recoverMotionWallpaper(url: url)
+            if !allDisplaysArePaused {
+                recoverMotionWallpaper(url: url)
+            }
             return
         }
-        videoWindows.forEach { $0.ensureVisibleAndPlaying() }
+        applySmartPausePlaybackState()
     }
 
     private func recoverMotionWallpaper(url: URL) {
-        guard isAnimating, !isMotionWallpaperPaused, !isRecoveringPlayback else { return }
+        guard isAnimating, !allDisplaysArePaused, !isRecoveringPlayback else { return }
         isRecoveringPlayback = true
         statusMessage = "Recovering motion wallpaper…"
         rebuildVideoWindows(url: url)
@@ -802,33 +815,88 @@ final class WallpaperController {
             resetHighSystemLoadDetection()
         }
 
-        let fullScreenApplication = pauseMotionForFullScreenApps
-            ? Self.frontmostFullScreenApplicationName()
-            : nil
-        let newReason = Self.motionPauseReason(
-            pauseForFullScreenApps: pauseMotionForFullScreenApps,
-            fullScreenApplicationName: fullScreenApplication,
+        let fullScreenApplications = pauseMotionForFullScreenApps
+            ? Self.fullScreenApplicationsByDisplay()
+            : [:]
+        let newGlobalReason = Self.motionPauseReason(
+            pauseForFullScreenApps: false,
+            fullScreenApplicationName: nil,
             pauseForHighSystemLoad: pauseMotionForHighSystemLoad,
             isHighSystemLoad: isHighSystemLoad,
             systemLoadPercent: currentSystemLoadPercent,
             pauseInLowPowerMode: pauseMotionInLowPowerMode,
             isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
         )
-        setMotionPauseReason(newReason)
+        setSmartPauseState(
+            globalReason: newGlobalReason,
+            fullScreenApplications: fullScreenApplications
+        )
     }
 
-    private func setMotionPauseReason(_ reason: MotionPauseReason?) {
-        guard reason != motionPauseReason else { return }
-        motionPauseReason = reason
-        if let reason {
-            videoWindows.forEach { $0.pausePlayback() }
-            endPlaybackActivityIfNeeded()
-            statusMessage = "Motion wallpaper paused — \(reason.message)"
+    private func setSmartPauseState(
+        globalReason: MotionPauseReason?,
+        fullScreenApplications: [CGDirectDisplayID: String]
+    ) {
+        guard globalReason != globalMotionPauseReason
+                || fullScreenApplications != fullScreenDisplayApplications else { return }
+        globalMotionPauseReason = globalReason
+        fullScreenDisplayApplications = fullScreenApplications
+        motionPauseReason = globalReason ?? fullScreenApplications
+            .sorted { $0.key < $1.key }
+            .first
+            .map { .fullScreenApplication($0.value) }
+        applySmartPausePlaybackState()
+
+        if let globalReason {
+            statusMessage = "Motion wallpaper paused — \(globalReason.message)"
+        } else if !fullScreenApplications.isEmpty {
+            statusMessage = fullScreenPauseMessage.replacingOccurrences(of: "Paused", with: "Motion wallpaper paused")
         } else {
-            beginPlaybackActivityIfNeeded()
-            videoWindows.forEach { $0.ensureVisibleAndPlaying() }
             statusMessage = "Motion wallpaper is playing"
         }
+    }
+
+    private func applySmartPausePlaybackState() {
+        var hasPlayingDisplay = false
+        let coveredDisplayIDs = Set(fullScreenDisplayApplications.keys)
+        for videoWindow in videoWindows {
+            let shouldPause = Self.shouldPauseDisplay(
+                videoWindow.displayID,
+                hasGlobalPause: globalMotionPauseReason != nil,
+                coveredDisplayIDs: coveredDisplayIDs
+            )
+            if shouldPause {
+                videoWindow.pausePlayback()
+            } else {
+                videoWindow.ensureVisibleAndPlaying()
+                hasPlayingDisplay = true
+            }
+        }
+        if hasPlayingDisplay {
+            beginPlaybackActivityIfNeeded()
+        } else {
+            endPlaybackActivityIfNeeded()
+        }
+    }
+
+    private var allDisplaysArePaused: Bool {
+        guard !videoWindows.isEmpty else { return globalMotionPauseReason != nil }
+        return globalMotionPauseReason != nil || videoWindows.allSatisfy {
+            fullScreenDisplayApplications[$0.displayID] != nil
+        }
+    }
+
+    private var fullScreenPauseMessage: String {
+        let pausedCount = fullScreenDisplayApplications.count
+        let displayCount = max(videoWindows.count, NSScreen.screens.count)
+        let names = Set(fullScreenDisplayApplications.values)
+        let reason = names.count == 1
+            ? "\(names.first ?? "An app") is full screen"
+            : "full-screen apps cover those desktops"
+        if pausedCount < displayCount {
+            return "Paused on \(pausedCount) of \(displayCount) displays — \(reason)"
+        }
+        return "Paused — \(reason)"
     }
 
     private func updateHighSystemLoadState() {
@@ -882,31 +950,128 @@ final class WallpaperController {
         return nil
     }
 
-    private static func frontmostFullScreenApplicationName() -> String? {
-        guard let application = NSWorkspace.shared.frontmostApplication,
-              application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              application.activationPolicy == .regular else { return nil }
+    private static func fullScreenApplicationsByDisplay() -> [CGDirectDisplayID: String] {
+        let displays = NSScreen.screens.compactMap { screen -> DisplayGeometry? in
+            guard let screenNumber = screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")
+            ] as? NSNumber else { return nil }
+            let displayID = CGDirectDisplayID(screenNumber.uint32Value)
+            return DisplayGeometry(id: displayID, frame: CGDisplayBounds(displayID))
+        }
+        guard !displays.isEmpty else { return [:] }
+
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
-            as? [[CFString: Any]] else { return nil }
+            as? [[CFString: Any]] else { return [:] }
 
-        let screenSizes = NSScreen.screens.map { $0.frame.size }
-        let hasFullScreenWindow = windows.contains { window in
-            guard (window[kCGWindowOwnerPID] as? Int) == Int(application.processIdentifier),
-                  (window[kCGWindowLayer] as? Int) == 0,
+        var windowFrames: [CGDirectDisplayID: [CGRect]] = [:]
+        var applicationNames: [CGDirectDisplayID: Set<String>] = [:]
+        var exactFullScreenApplications: [CGDirectDisplayID: String] = [:]
+        for window in windows {
+            guard (window[kCGWindowLayer] as? Int) == 0,
+                  (window[kCGWindowAlpha] as? Double ?? 1) > 0.01,
+                  let ownerPID = window[kCGWindowOwnerPID] as? Int,
+                  ownerPID != Int(ProcessInfo.processInfo.processIdentifier),
+                  let application = NSRunningApplication(
+                    processIdentifier: pid_t(ownerPID)
+                  ),
+                  application.activationPolicy == .regular,
                   let boundsDictionary = window[kCGWindowBounds] as? NSDictionary,
                   let bounds = CGRect(
                     dictionaryRepresentation: boundsDictionary as CFDictionary
                   ) else {
-                return false
+                continue
             }
-            return screenSizes.contains { screenSize in
-                abs(bounds.width - screenSize.width) <= 6
-                    && abs(bounds.height - screenSize.height) <= 6
+            let name = application.localizedName
+                ?? window[kCGWindowOwnerName] as? String
+                ?? "A full-screen app"
+            if let displayID = coveredDisplayID(for: bounds, displays: displays) {
+                exactFullScreenApplications[displayID] = name
+            }
+            for display in displays {
+                let intersection = bounds.intersection(display.frame)
+                guard !intersection.isNull, !intersection.isEmpty else { continue }
+                windowFrames[display.id, default: []].append(intersection)
+                applicationNames[display.id, default: []].insert(name)
             }
         }
-        guard hasFullScreenWindow else { return nil }
-        return application.localizedName ?? "A full-screen app"
+
+        var coveredApplications: [CGDirectDisplayID: String] = [:]
+        for display in displays where isDisplayCovered(
+            display.frame,
+            by: windowFrames[display.id] ?? []
+        ) {
+            if let exactApplication = exactFullScreenApplications[display.id] {
+                coveredApplications[display.id] = exactApplication
+            } else {
+                let names = applicationNames[display.id] ?? []
+                coveredApplications[display.id] = names.count == 1
+                    ? names.first
+                    : "Split View"
+            }
+        }
+        return coveredApplications
+    }
+
+    nonisolated static func coveredDisplayID(
+        for windowFrame: CGRect,
+        displays: [DisplayGeometry],
+        tolerance: CGFloat = 6
+    ) -> CGDirectDisplayID? {
+        displays.first { display in
+            abs(windowFrame.minX - display.frame.minX) <= tolerance
+                && abs(windowFrame.minY - display.frame.minY) <= tolerance
+                && abs(windowFrame.width - display.frame.width) <= tolerance
+                && abs(windowFrame.height - display.frame.height) <= tolerance
+        }?.id
+    }
+
+    nonisolated static func shouldPauseDisplay(
+        _ displayID: CGDirectDisplayID,
+        hasGlobalPause: Bool,
+        coveredDisplayIDs: Set<CGDirectDisplayID>
+    ) -> Bool {
+        hasGlobalPause || coveredDisplayIDs.contains(displayID)
+    }
+
+    nonisolated static func isDisplayCovered(
+        _ displayFrame: CGRect,
+        by windowFrames: [CGRect],
+        minimumCoverage: CGFloat = 0.985
+    ) -> Bool {
+        guard displayFrame.width > 0, displayFrame.height > 0 else { return false }
+        let clippedFrames = windowFrames.compactMap { frame -> CGRect? in
+            let intersection = frame.intersection(displayFrame)
+            return intersection.isNull || intersection.isEmpty ? nil : intersection
+        }
+        guard !clippedFrames.isEmpty else { return false }
+
+        let xCoordinates = Set(
+            clippedFrames.flatMap { [$0.minX, $0.maxX] }
+        ).sorted()
+        var coveredArea: CGFloat = 0
+        for (left, right) in zip(xCoordinates, xCoordinates.dropFirst()) where right > left {
+            let midpoint = (left + right) / 2
+            let intervals = clippedFrames
+                .filter { $0.minX <= midpoint && $0.maxX >= midpoint }
+                .map { ($0.minY, $0.maxY) }
+                .sorted { $0.0 < $1.0 }
+            guard var merged = intervals.first else { continue }
+            var coveredHeight: CGFloat = 0
+            for interval in intervals.dropFirst() {
+                if interval.0 <= merged.1 {
+                    merged.1 = max(merged.1, interval.1)
+                } else {
+                    coveredHeight += merged.1 - merged.0
+                    merged = interval
+                }
+            }
+            coveredHeight += merged.1 - merged.0
+            coveredArea += (right - left) * coveredHeight
+        }
+
+        let displayArea = displayFrame.width * displayFrame.height
+        return coveredArea / displayArea >= minimumCoverage
     }
 
     private func retireCurrentVideoWindows() {
@@ -930,6 +1095,7 @@ final class WallpaperController {
 @MainActor
 private final class DesktopVideoWindow: Identifiable {
     let id = UUID()
+    let displayID: CGDirectDisplayID
     let player: AVQueuePlayer
     private let looper: AVPlayerLooper
     private let asset: AVURLAsset
@@ -956,6 +1122,9 @@ private final class DesktopVideoWindow: Identifiable {
         onPlaybackFailure: @escaping () -> Void
     ) {
         self.onPlaybackFailure = onPlaybackFailure
+        displayID = (screen.deviceDescription[
+            NSDeviceDescriptionKey("NSScreenNumber")
+        ] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) } ?? 0
         asset = AVURLAsset(url: url)
         let templateItem = AVPlayerItem(asset: asset)
         player = AVQueuePlayer()
