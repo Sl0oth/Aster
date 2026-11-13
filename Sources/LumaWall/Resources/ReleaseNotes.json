@@ -25,7 +25,7 @@
     {
       "id": "shelf-and-bar-options",
       "title": "Shelf and Bar, rearranged",
-      "description": "Reorder Shelf widgets, set your own timer lengths, choose its display and hover delay, and get a notification when time is up. Bar can hide icons again after a delay and has a global shortcut.",
+      "description": "Reorder Shelf widgets, set your own timer lengths, choose its display and hover delay, and get a notification when time is up. Bar hides icons again on macOS 27, can tuck them away after a delay, and has a global shortcut.",
       "symbol": "capsule.fill"
     },
     {

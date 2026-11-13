@@ -200,6 +200,52 @@ final class CustomizationTests: XCTestCase {
         XCTAssertEqual(restored.widgetRows, [[.dropZone], [.timer]])
     }
 
+    // MARK: Bar
+
+    func testCollapsedDividerFillsTheSpaceUpToTheNotch() {
+        let screen = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+        // Measured on a notched display: the divider's window ends at 1400 and
+        // the menu bar's right-hand area starts at 956.5.
+        let lengths = BarController.fittedCollapseLengths(
+            dividerMaxX: 1400,
+            screenFrame: screen,
+            notchRightEdge: 956.5
+        )
+        XCTAssertEqual(lengths, [419.5])
+    }
+
+    func testCollapsedDividerTriesNarrowerWidthsWithoutANotch() {
+        let screen = CGRect(x: 0, y: 0, width: 2000, height: 1200)
+        let lengths = BarController.fittedCollapseLengths(
+            dividerMaxX: 1700,
+            screenFrame: screen,
+            notchRightEdge: nil
+        )
+        XCTAssertEqual(lengths.count, 5)
+        XCTAssertEqual(lengths, lengths.sorted(by: >), "Widest first")
+        XCTAssertEqual(lengths.first, 1700 - 440 - 24)
+        // A divider already at the left edge of the status area has nothing to hide.
+        XCTAssertTrue(BarController.fittedCollapseLengths(
+            dividerMaxX: 980,
+            screenFrame: CGRect(x: 0, y: 0, width: 1728, height: 1117),
+            notchRightEdge: 956.5
+        ).isEmpty)
+    }
+
+    func testRejectedDividerIsRecognizedByItsUnmovedFrame() {
+        let expanded = CGRect(x: 1372, y: 1084, width: 28, height: 33)
+        // macOS accepted the wider divider: it grew to the left.
+        XCTAssertTrue(BarController.dividerWasPlaced(
+            collapsedFrame: CGRect(x: 956, y: 1084, width: 436, height: 33),
+            expandedFrame: expanded
+        ))
+        // macOS dropped it: the frame only got wider in place.
+        XCTAssertFalse(BarController.dividerWasPlaced(
+            collapsedFrame: CGRect(x: 1372, y: 1084, width: 3472, height: 33),
+            expandedFrame: expanded
+        ))
+    }
+
     // MARK: App
 
     func testMenuBarFallbackAppearsOnlyWhenNothingElseCanOpenAster() {

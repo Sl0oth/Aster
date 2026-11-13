@@ -92,7 +92,7 @@ See [ReleaseTools/README.md](ReleaseTools/README.md) for the complete publishing
 3. Place the Aster menu-bar icon immediately to the divider's right.
 4. Click Aster to collapse or reveal the group.
 
-macOS stores the dragged status-item positions, while Aster stores its own Bar settings. Use **Reset Aster control positions** if the controls become separated. The Icon Spacing slider adjusts the system-wide gap between status items; system controls refresh when applied, while third-party menu apps may need to be reopened.
+On macOS 27 and later, the hidden icons move into the menu bar's overflow, where you can still reach them. macOS stores the dragged status-item positions, while Aster stores its own Bar settings. Use **Reset Aster control positions** if the controls become separated. The Icon Spacing slider adjusts the system-wide gap between status items; system controls refresh when applied, while third-party menu apps may need to be reopened.
 
 ## Privacy
 

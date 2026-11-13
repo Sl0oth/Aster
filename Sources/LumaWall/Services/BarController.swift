@@ -52,6 +52,11 @@ final class BarController {
     private var hasActivated = false
     private var toggleLocked = false
     private var autoCollapseTask: Task<Void, Never>?
+    private var collapseFitTask: Task<Void, Never>?
+    private var appActivationObserver: NSObjectProtocol?
+    /// Where the divider sat before it was widened, for judging whether macOS
+    /// accepted the wider size.
+    private var expandedDividerFrame: CGRect?
     private weak var shortcuts: ShortcutStore?
     private var shortcutsObserver: NSObjectProtocol?
     @ObservationIgnored private var hotkey: GlobalHotkey?
@@ -148,6 +153,8 @@ final class BarController {
         if !isEnabled {
             autoCollapseTask?.cancel()
             autoCollapseTask = nil
+            collapseFitTask?.cancel()
+            collapseFitTask = nil
         }
     }
 
@@ -173,6 +180,9 @@ final class BarController {
             isCollapsed = false
             defaults.set(false, forKey: Keys.collapsed)
         }
+        collapseFitTask?.cancel()
+        collapseFitTask = nil
+        expandedDividerFrame = nil
         clearStatusItemAutosaveState()
         removeStatusItems()
         installStatusItemsIfNeeded()
@@ -250,9 +260,11 @@ final class BarController {
         dividerItem?.button?.isHidden = false
 
         if shouldRestoreCollapsedState {
-            DispatchQueue.main.async { [weak self] in
+            // Give the menu bar a moment to place the divider at its normal size;
+            // the collapsed size is measured from that position.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self, self.isEnabled, self.isCollapsed else { return }
-                self.dividerItem?.length = self.collapsedDividerLength
+                self.collapseDivider()
             }
         }
         statusMessage = isCollapsed
@@ -370,7 +382,13 @@ final class BarController {
         // Assign this in one layout pass. Repeatedly animating NSStatusItem.length
         // makes AppKit draw the separator as a giant sweeping bar and can leave
         // neighboring status items in their original positions.
-        dividerItem.length = collapsed ? collapsedDividerLength : expandedDividerLength
+        if collapsed {
+            collapseDivider()
+        } else {
+            collapseFitTask?.cancel()
+            collapseFitTask = nil
+            dividerItem.length = expandedDividerLength
+        }
         updateControlIcon()
         scheduleAutoCollapseIfNeeded()
     }
@@ -382,7 +400,149 @@ final class BarController {
 
     private func screenLayoutChanged() {
         guard isEnabled, isCollapsed else { return }
-        dividerItem?.length = collapsedDividerLength
+        refitCollapsedDivider()
+    }
+
+    // MARK: Collapsing
+
+    /// Before macOS 27 a divider far wider than the screen pushed everything to
+    /// its left out of view. macOS 27 removes a status item that cannot fit, so
+    /// the icons stayed put. There the divider is sized to fill the room that is
+    /// actually available, and macOS tucks the icons it displaces into the menu
+    /// bar's overflow.
+    private var usesFittedCollapse: Bool {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+    }
+
+    private func collapseDivider() {
+        guard let dividerItem else { return }
+        collapseFitTask?.cancel()
+        collapseFitTask = nil
+        guard usesFittedCollapse,
+              let window = dividerItem.button?.window,
+              let screen = window.screen ?? NSScreen.main else {
+            dividerItem.length = collapsedDividerLength
+            return
+        }
+        // While collapsed the window already has its widened frame; keep the
+        // measurement taken when the divider was last at its normal size.
+        if dividerItem.length <= expandedDividerLength + 1 || expandedDividerFrame == nil {
+            expandedDividerFrame = window.frame
+        }
+        guard let expandedFrame = expandedDividerFrame else { return }
+        let candidates = Self.fittedCollapseLengths(
+            dividerMaxX: expandedFrame.maxX,
+            screenFrame: screen.frame,
+            notchRightEdge: screen.auxiliaryTopRightArea?.minX
+        )
+        guard !candidates.isEmpty else {
+            abandonCollapse(message: "There are no icons to the left of the divider to hide")
+            return
+        }
+        observeAppActivationIfNeeded()
+        collapseFitTask = Task { @MainActor [weak self] in
+            for length in candidates {
+                guard let self, let dividerItem = self.dividerItem, self.isCollapsed else { return }
+                dividerItem.length = length
+                try? await Task.sleep(for: .milliseconds(450))
+                guard !Task.isCancelled, self.isCollapsed else { return }
+                if let frame = dividerItem.button?.window?.frame,
+                   Self.dividerWasPlaced(collapsedFrame: frame, expandedFrame: expandedFrame) {
+                    self.collapseFitTask = nil
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            self?.collapseFitTask = nil
+            self?.abandonCollapse(message: "macOS has no room to hide these icons right now")
+        }
+    }
+
+    private func abandonCollapse(message: String) {
+        isCollapsed = false
+        if rememberCollapsedState { defaults.set(false, forKey: Keys.collapsed) }
+        dividerItem?.length = expandedDividerLength
+        statusMessage = message
+    }
+
+    /// Another app's longer menus can crowd the divider out, which brings the
+    /// hidden icons back. Fit it again when the frontmost app changes.
+    private func observeAppActivationIfNeeded() {
+        guard appActivationObserver == nil else { return }
+        appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(600))
+                self?.refitCollapsedDividerIfDisplaced()
+            }
+        }
+    }
+
+    private func refitCollapsedDividerIfDisplaced() {
+        guard isEnabled, isCollapsed, usesFittedCollapse, collapseFitTask == nil,
+              let expandedDividerFrame,
+              let frame = dividerItem?.button?.window?.frame,
+              !Self.dividerWasPlaced(collapsedFrame: frame, expandedFrame: expandedDividerFrame) else {
+            return
+        }
+        collapseDivider()
+    }
+
+    private func refitCollapsedDivider() {
+        guard usesFittedCollapse else {
+            dividerItem?.length = collapsedDividerLength
+            return
+        }
+        // The arrangement changed, so the old measurement no longer applies.
+        collapseFitTask?.cancel()
+        collapseFitTask = nil
+        dividerItem?.length = expandedDividerLength
+        expandedDividerFrame = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.isEnabled, self.isCollapsed else { return }
+            self.collapseDivider()
+        }
+    }
+
+    /// Divider lengths to try, widest first, that fill the menu bar from the
+    /// divider leftward.
+    ///
+    /// On a display with a notch the usable space ends at the notch, so one
+    /// exact length is enough. Without a notch the space ends wherever the
+    /// frontmost app's menus do, which Aster cannot see, so it tries a few
+    /// widths and keeps the widest that macOS accepts.
+    nonisolated static func fittedCollapseLengths(
+        dividerMaxX: CGFloat,
+        screenFrame: CGRect,
+        notchRightEdge: CGFloat?
+    ) -> [CGFloat] {
+        // A status item's window is 16 points wider than its length, and macOS
+        // insets a widened item by a further 8.
+        let chrome: CGFloat = 24
+        let minimumUsefulLength: CGFloat = 40
+        let leftLimits: [CGFloat]
+        if let notchRightEdge, notchRightEdge > screenFrame.minX, notchRightEdge < dividerMaxX {
+            leftLimits = [notchRightEdge]
+        } else {
+            leftLimits = [0.22, 0.30, 0.38, 0.46, 0.54].map {
+                screenFrame.minX + screenFrame.width * $0
+            }
+        }
+        return leftLimits
+            .map { dividerMaxX - $0 - chrome }
+            .filter { $0 >= minimumUsefulLength }
+    }
+
+    /// macOS leaves a divider it rejected where it was; one it accepted grows
+    /// to the left.
+    nonisolated static func dividerWasPlaced(
+        collapsedFrame: CGRect,
+        expandedFrame: CGRect
+    ) -> Bool {
+        collapsedFrame.minX < expandedFrame.minX - 20
     }
 
     @objc private func controlPressed(_ sender: NSStatusBarButton) {
