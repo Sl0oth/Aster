@@ -1,26 +1,38 @@
 {
-  "version": "1.0.0-beta.3",
-  "build": 3,
-  "headline": "Screen Saver protection that keeps moving",
-  "summary": "Aster can now rotate through every background in your Canvas library without repeating one until the full set has played. Configurable pixel shifting adds another layer of protection for displays that stay on for long periods.",
+  "version": "1.0.0-beta.4",
+  "build": 4,
+  "headline": "Make every part of Aster yours",
+  "summary": "Canvas has a new layout that puts each wallpaper's Desktop, Lock Screen, and Screen Saver choices in one place. Clips, Shelf, and Bar gain the options you asked for, a new Settings window brings everything together, and a long list of glitches is fixed.",
   "features": [
     {
-      "id": "screen-saver-canvas-rotation",
-      "title": "Rotate the whole Canvas library",
-      "description": "The Screen Saver uses a shuffled queue of every current Canvas background, completing the set before anything repeats.",
-      "symbol": "rectangle.stack.badge.play"
+      "id": "canvas-redesign",
+      "title": "A clearer Canvas",
+      "description": "Pick a wallpaper and set it for the Desktop, Lock Screen, or Screen Saver from one panel. Shuffle and playback options each have their own tab, and double-clicking a wallpaper sets it right away.",
+      "symbol": "photo.stack.fill"
     },
     {
-      "id": "screen-saver-live-library",
-      "title": "Stays in sync",
-      "description": "Importing or removing a Canvas item updates the installed Screen Saver playlist automatically the next time it runs.",
-      "symbol": "arrow.triangle.2.circlepath"
+      "id": "canvas-displays-and-motion",
+      "title": "Every display, every format",
+      "description": "Choose a different wallpaper for each display. GIFs now animate on the Desktop, and motion wallpapers gain speed, dimming, and pause-on-battery controls.",
+      "symbol": "display.2"
     },
     {
-      "id": "screen-saver-pixel-shift",
-      "title": "Pixel shifting",
-      "description": "Overscanned Screen Saver content moves gently at your chosen interval so bright details do not remain on the same pixels.",
-      "symbol": "arrow.up.left.and.arrow.down.right"
+      "id": "clips-options",
+      "title": "Clips on your terms",
+      "description": "Set how much history to keep and for how long, ignore any app you choose, and optionally paste a clip the moment you pick it. Pausing capture no longer turns off the Clips shortcut.",
+      "symbol": "doc.on.clipboard.fill"
+    },
+    {
+      "id": "shelf-and-bar-options",
+      "title": "Shelf and Bar, rearranged",
+      "description": "Reorder Shelf widgets, set your own timer lengths, choose its display and hover delay, and get a notification when time is up. Bar can hide icons again after a delay and has a global shortcut.",
+      "symbol": "capsule.fill"
+    },
+    {
+      "id": "settings-and-accent",
+      "title": "New Settings and accent colors",
+      "description": "Turn modules on or off, manage your data, and reset Aster from one window. Pick from nine accent colors for the whole app.",
+      "symbol": "paintpalette.fill"
     }
   ]
 }

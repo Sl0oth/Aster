@@ -8,6 +8,7 @@ final class BarController {
         didSet {
             defaults.set(isEnabled, forKey: Keys.enabled)
             syncActivation()
+            NotificationCenter.default.post(name: .asterPresenceChanged, object: nil)
         }
     }
 
@@ -21,6 +22,20 @@ final class BarController {
     var rememberCollapsedState: Bool {
         didSet { defaults.set(rememberCollapsedState, forKey: Keys.rememberCollapsedState) }
     }
+
+    static let autoCollapseChoices = [0, 5, 10, 30, 60]
+
+    /// Seconds after revealing the icons before Bar hides them again. 0 leaves them shown.
+    var autoCollapseDelay: Int {
+        didSet {
+            guard autoCollapseDelay != oldValue else { return }
+            defaults.set(autoCollapseDelay, forKey: Keys.autoCollapseDelay)
+            scheduleAutoCollapseIfNeeded()
+        }
+    }
+
+    /// Set when the global shortcut could not be registered.
+    private(set) var hotkeyError: String?
 
     var menuBarSpacingOffset: Double
 
@@ -36,12 +51,17 @@ final class BarController {
     private var screenObserver: NSObjectProtocol?
     private var hasActivated = false
     private var toggleLocked = false
+    private var autoCollapseTask: Task<Void, Never>?
+    private weak var shortcuts: ShortcutStore?
+    private var shortcutsObserver: NSObjectProtocol?
+    @ObservationIgnored private var hotkey: GlobalHotkey?
 
     private enum Keys {
         static let enabled = "Aster.Bar.enabled"
         static let compactSpacing = "Aster.Bar.spacing"
         static let rememberCollapsedState = "Aster.Bar.rememberCollapsedState"
         static let collapsed = "Aster.Bar.collapsed"
+        static let autoCollapseDelay = "Aster.Bar.autoCollapseDelay"
         static let menuBarSpacingOffset = "Aster.Bar.menuBarSpacingOffset"
         static let controlPosition = "NSStatusItem Preferred Position Aster.Bar.Control"
         static let dividerPosition = "NSStatusItem Preferred Position Aster.Bar.Divider"
@@ -55,15 +75,58 @@ final class BarController {
         compactSpacing = defaults.object(forKey: Keys.compactSpacing) as? Bool ?? true
         rememberCollapsedState = defaults.object(forKey: Keys.rememberCollapsedState) as? Bool ?? true
         isCollapsed = defaults.bool(forKey: Keys.collapsed)
+        let storedDelay = defaults.integer(forKey: Keys.autoCollapseDelay)
+        autoCollapseDelay = Self.autoCollapseChoices.contains(storedDelay) ? storedDelay : 0
         let savedSpacing = defaults.object(forKey: Keys.menuBarSpacingOffset) as? Double ?? 0
         menuBarSpacingOffset = savedSpacing
         appliedMenuBarSpacingOffset = savedSpacing
     }
 
-    func activate() {
+    func activate(shortcuts: ShortcutStore? = nil) {
         guard !hasActivated else { return }
         hasActivated = true
+        self.shortcuts = shortcuts
+        if shortcuts != nil {
+            shortcutsObserver = NotificationCenter.default.addObserver(
+                forName: .asterShortcutsChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.syncHotkey() }
+            }
+        }
         syncActivation()
+    }
+
+    /// The shortcut works only while Bar is on and the shortcut is enabled in Keys.
+    private func syncHotkey() {
+        guard let shortcuts, isEnabled, !shortcuts.isDisabled(.toggleBar) else {
+            hotkey?.unregister()
+            hotkeyError = nil
+            return
+        }
+        let binding = shortcuts.binding(for: .toggleBar)
+        let hotkey = hotkey ?? GlobalHotkey(signature: 0x41534252 /* "ASBR" */, identifier: 1) { [weak self] in
+            self?.toggle()
+        }
+        self.hotkey = hotkey
+        hotkeyError = hotkey.register(binding)
+            ? nil
+            : "macOS or another app is already using \(binding.display). Choose another shortcut in Keys."
+    }
+
+    private func scheduleAutoCollapseIfNeeded() {
+        autoCollapseTask?.cancel()
+        autoCollapseTask = nil
+        guard isEnabled, !isCollapsed, autoCollapseDelay > 0, dividerItem != nil else { return }
+        let delay = autoCollapseDelay
+        autoCollapseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            self.autoCollapseTask = nil
+            guard self.isEnabled, !self.isCollapsed else { return }
+            self.setCollapsed(true)
+        }
     }
 
     private func syncActivation() {
@@ -81,6 +144,11 @@ final class BarController {
             self.screenObserver = nil
         }
         syncStatusItems()
+        syncHotkey()
+        if !isEnabled {
+            autoCollapseTask?.cancel()
+            autoCollapseTask = nil
+        }
     }
 
     func toggle() {
@@ -304,6 +372,7 @@ final class BarController {
         // neighboring status items in their original positions.
         dividerItem.length = collapsed ? collapsedDividerLength : expandedDividerLength
         updateControlIcon()
+        scheduleAutoCollapseIfNeeded()
     }
 
     private func updateControlIcon() {
@@ -333,15 +402,13 @@ final class BarController {
         )
         toggleItem.target = self
         menu.addItem(toggleItem)
-        if !AsterAppPresence.showsInDock() {
-            let openItem = NSMenuItem(
-                title: "Open Aster",
-                action: #selector(openSettings),
-                keyEquivalent: ""
-            )
-            openItem.target = self
-            menu.addItem(openItem)
-        }
+        let openItem = NSMenuItem(
+            title: "Open Aster",
+            action: #selector(openSettings),
+            keyEquivalent: ""
+        )
+        openItem.target = self
+        menu.addItem(openItem)
         let resetItem = NSMenuItem(title: "Restore Aster Menu Bar Controls", action: #selector(resetPositionsFromMenu), keyEquivalent: "")
         resetItem.target = self
         menu.addItem(resetItem)
@@ -380,7 +447,7 @@ final class BarController {
         return min(max(width * 2, 700), 10_000)
     }
 
-    private static func asterStatusImage() -> NSImage? {
+    static func asterStatusImage() -> NSImage? {
         guard let url = Bundle.asterResources.url(forResource: "AsterStatusIcon", withExtension: "svg"),
               let source = NSImage(contentsOf: url) else { return NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Aster") }
         let image = source.copy() as? NSImage ?? source

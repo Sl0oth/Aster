@@ -313,6 +313,40 @@ enum ScreenSaverInstaller {
         reloadScreenSaverHost()
     }
 
+    /// Applies the shared Fit and mute choices to the installed saver's media.
+    static func setPresentation(
+        fillMode: WallpaperController.FillMode,
+        muted: Bool
+    ) throws {
+        guard isInstalled else { return }
+        guard var configuration = readConfiguration(in: installedBundleURL) else {
+            throw InstallationError.configurationMissing
+        }
+        func updated(_ media: MediaConfiguration) -> MediaConfiguration {
+            MediaConfiguration(
+                mediaPath: media.mediaPath,
+                mediaFilename: media.mediaFilename,
+                mediaKind: media.mediaKind,
+                fillMode: fillMode.rawValue,
+                muted: muted
+            )
+        }
+        let screenSaver = updated(configuration.screenSaver)
+        let lockScreen = updated(configuration.lockScreen)
+        guard screenSaver != configuration.screenSaver
+                || lockScreen != configuration.lockScreen else { return }
+        configuration.screenSaver = screenSaver
+        configuration.lockScreen = lockScreen
+        // The playlist copies its presentation from the Screen Saver entry.
+        _ = try synchronizeCanvasPlaylist(
+            in: installedBundleURL,
+            configuration: &configuration
+        )
+        try write(configuration, in: installedBundleURL)
+        try sign(installedBundleURL)
+        reloadScreenSaverHost()
+    }
+
     static func synchronizeCanvasPlaylistIfInstalled() throws {
         guard isInstalled else { return }
         guard var configuration = readConfiguration(in: installedBundleURL) else {

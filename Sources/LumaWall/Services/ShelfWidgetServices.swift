@@ -25,7 +25,7 @@ struct ShelfDropItem: Identifiable, Hashable {
     }
 }
 
-struct ShelfReminderItem: Identifiable, Hashable {
+struct ShelfReminderItem: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
 }
@@ -60,9 +60,8 @@ struct ShelfWeather {
     }
 }
 
-@MainActor
 enum ReminderAppleScript {
-    static func pendingReminders(limit: Int = 4, requestPermission: Bool = true) -> [ShelfReminderItem]? {
+    static func pendingReminders(limit: Int = 4, requestPermission: Bool = true) async -> [ShelfReminderItem]? {
         if !requestPermission,
            !AppleEventPermission.canSendWithoutPrompt(to: "com.apple.reminders") {
             return nil
@@ -79,27 +78,29 @@ enum ReminderAppleScript {
             return output
         end tell
         """
-        guard let result = execute(source) else { return nil }
-        guard result.numberOfItems > 0 else { return [] }
-        return (1...result.numberOfItems).compactMap { index in
-            guard let item = result.atIndex(index),
-                  let id = item.atIndex(1)?.stringValue,
-                  let name = item.atIndex(2)?.stringValue else { return nil }
-            return ShelfReminderItem(id: id, name: name)
+        return await AppleScriptRunner.run(source) { result -> [ShelfReminderItem]? in
+            guard let result else { return nil }
+            guard result.numberOfItems > 0 else { return [] }
+            return (1...result.numberOfItems).compactMap { index in
+                guard let item = result.atIndex(index),
+                      let id = item.atIndex(1)?.stringValue,
+                      let name = item.atIndex(2)?.stringValue else { return nil }
+                return ShelfReminderItem(id: id, name: name)
+            }
         }
     }
 
-    static func add(_ name: String) -> Bool {
+    static func add(_ name: String) async -> Bool {
         let safeName = escaped(name)
         let source = """
         tell application "Reminders"
             make new reminder in default list with properties {name:"\(safeName)"}
         end tell
         """
-        return execute(source) != nil
+        return await AppleScriptRunner.succeeds(source)
     }
 
-    static func complete(id: String) -> Bool {
+    static func complete(id: String) async -> Bool {
         let safeID = escaped(id)
         let source = """
         tell application "Reminders"
@@ -113,18 +114,13 @@ enum ReminderAppleScript {
             return false
         end tell
         """
-        return execute(source)?.booleanValue ?? false
+        return await AppleScriptRunner.boolean(source) ?? false
     }
 
     private static func escaped(_ value: String) -> String {
         value.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\n", with: " ")
-    }
-
-    private static func execute(_ source: String) -> NSAppleEventDescriptor? {
-        var error: NSDictionary?
-        return NSAppleScript(source: source)?.executeAndReturnError(&error)
     }
 }
 

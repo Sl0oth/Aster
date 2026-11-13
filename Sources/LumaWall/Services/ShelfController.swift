@@ -2,10 +2,113 @@ import AppKit
 import IOKit.ps
 import Observation
 import SwiftUI
+import UserNotifications
+
+/// Everything Shelf can show. Wide widgets take a full row; the others share a
+/// row in pairs.
+enum ShelfWidget: String, CaseIterable, Identifiable, Sendable {
+    case nowPlaying
+    case dropZone
+    case reminders
+    case shortcuts
+    case switches
+    case calendar
+    case timer
+    case alarm
+    case battery
+    case systemHealth
+    case weather
+    case clipboard
+
+    var id: String { rawValue }
+
+    var isWide: Bool {
+        switch self {
+        case .nowPlaying, .dropZone, .reminders, .shortcuts, .switches: true
+        case .calendar, .timer, .alarm, .battery, .systemHealth, .weather, .clipboard: false
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .nowPlaying: "Now Playing"
+        case .dropZone: "Drop Zone"
+        case .reminders: "Reminders"
+        case .shortcuts: "Shortcuts"
+        case .switches: "Switch"
+        case .calendar: "Calendar"
+        case .timer: "Quick Timer"
+        case .alarm: "Alarm"
+        case .battery: "Battery"
+        case .systemHealth: "System Health"
+        case .weather: "Weather"
+        case .clipboard: "Latest Clip"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .nowPlaying: "play.square.stack.fill"
+        case .dropZone: "tray.and.arrow.down.fill"
+        case .reminders: "checklist"
+        case .shortcuts: "square.2.layers.3d.fill"
+        case .switches: "switch.2"
+        case .calendar: "calendar"
+        case .timer: "timer"
+        case .alarm: "alarm.fill"
+        case .battery: "battery.100percent"
+        case .systemHealth: "gauge.with.dots.needle.67percent"
+        case .weather: "cloud.sun.fill"
+        case .clipboard: "doc.on.clipboard"
+        }
+    }
+
+    /// Arranges widgets into rows in the given order: a wide widget gets its own
+    /// row, and neighbouring compact widgets pair up.
+    static func rows(for widgets: [ShelfWidget]) -> [[ShelfWidget]] {
+        var rows: [[ShelfWidget]] = []
+        var pending: [ShelfWidget] = []
+        for widget in widgets {
+            if widget.isWide {
+                if !pending.isEmpty {
+                    rows.append(pending)
+                    pending = []
+                }
+                rows.append([widget])
+            } else {
+                pending.append(widget)
+                if pending.count == 2 {
+                    rows.append(pending)
+                    pending = []
+                }
+            }
+        }
+        if !pending.isEmpty { rows.append(pending) }
+        return rows
+    }
+
+    /// A saved order with unknown names dropped and any missing widgets appended.
+    static func normalizedOrder(_ stored: [String]) -> [ShelfWidget] {
+        var order: [ShelfWidget] = []
+        for name in stored {
+            if let widget = ShelfWidget(rawValue: name), !order.contains(widget) {
+                order.append(widget)
+            }
+        }
+        for widget in allCases where !order.contains(widget) {
+            order.append(widget)
+        }
+        return order
+    }
+}
 
 @MainActor
 @Observable
 final class ShelfController {
+    static let hoverDelayChoices: [Double] = [0, 0.15, 0.3, 0.6]
+    static let defaultTimerPresets = [5, 15, 25]
+    static let maximumShortcutCount = 4
+
     var isEnabled: Bool {
         didSet {
             defaults.set(isEnabled, forKey: Keys.enabled)
@@ -73,6 +176,40 @@ final class ShelfController {
     var weatherLocation: String {
         didSet { defaults.set(weatherLocation, forKey: Keys.weatherLocation) }
     }
+    /// The order widgets appear in, top to bottom. Hidden widgets keep their place.
+    private(set) var widgetOrder: [ShelfWidget] {
+        didSet {
+            defaults.set(widgetOrder.map(\.rawValue), forKey: Keys.widgetOrder)
+            updatePanelFrame(animated: false)
+        }
+    }
+    /// How long the pointer must rest on the notch before Shelf opens.
+    var hoverDelay: Double {
+        didSet { defaults.set(hoverDelay, forKey: Keys.hoverDelay) }
+    }
+    /// The display Shelf lives on. `nil` follows the notch, or the main display.
+    var displayKey: String? {
+        didSet {
+            defaults.set(displayKey, forKey: Keys.displayKey)
+            updatePanelFrame(animated: false)
+        }
+    }
+    /// The three one-click lengths, in minutes, offered by the Quick Timer widget.
+    private(set) var timerPresets: [Int] {
+        didSet { defaults.set(timerPresets, forKey: Keys.timerPresets) }
+    }
+    var notifiesWhenTimersEnd: Bool {
+        didSet {
+            defaults.set(notifiesWhenTimersEnd, forKey: Keys.timerNotifications)
+            if notifiesWhenTimersEnd { ShelfNotifier.requestAuthorizationIfNeeded() }
+        }
+    }
+    /// Every shortcut in the Shortcuts app, for choosing which ones Shelf shows.
+    private(set) var availableShortcuts: [String] = []
+    /// The shortcuts the user picked for Shelf. Empty shows the first few.
+    private(set) var selectedShortcutNames: [String] {
+        didSet { defaults.set(selectedShortcutNames, forKey: Keys.selectedShortcuts) }
+    }
 
     private(set) var isExpanded = false
     private(set) var batteryLevel: Int?
@@ -118,6 +255,10 @@ final class ShelfController {
     private var weatherTask: Task<Void, Never>?
     private var lastWeatherRefresh: Date?
     private var isActive = false
+    private var expandTask: Task<Void, Never>?
+    private var isLoadingReminders = false
+    private var isLoadingShortcuts = false
+    private var isLoadingLegacyNowPlaying = false
 
     private enum Keys {
         static let enabled = "Aster.Shelf.enabled"
@@ -142,6 +283,12 @@ final class ShelfController {
         static let timerEnd = "Aster.Shelf.timer.end"
         static let timerDuration = "Aster.Shelf.timer.duration"
         static let alarmDate = "Aster.Shelf.alarm.date"
+        static let widgetOrder = "Aster.Shelf.widgetOrder"
+        static let hoverDelay = "Aster.Shelf.hoverDelay"
+        static let displayKey = "Aster.Shelf.display"
+        static let timerPresets = "Aster.Shelf.timer.presets"
+        static let timerNotifications = "Aster.Shelf.timer.notifications"
+        static let selectedShortcuts = "Aster.Shelf.shortcuts.selected"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -165,6 +312,16 @@ final class ShelfController {
         showsHeaderDate = defaults.object(forKey: Keys.headerDate) as? Bool ?? true
         showsHeaderTime = defaults.object(forKey: Keys.headerTime) as? Bool ?? true
         weatherLocation = defaults.string(forKey: Keys.weatherLocation) ?? ""
+        widgetOrder = ShelfWidget.normalizedOrder(defaults.stringArray(forKey: Keys.widgetOrder) ?? [])
+        let storedHoverDelay = defaults.object(forKey: Keys.hoverDelay) as? Double ?? 0
+        hoverDelay = Self.hoverDelayChoices.contains(storedHoverDelay) ? storedHoverDelay : 0
+        displayKey = defaults.string(forKey: Keys.displayKey)
+        let storedPresets = (defaults.array(forKey: Keys.timerPresets) as? [Int]) ?? []
+        timerPresets = storedPresets.count == Self.defaultTimerPresets.count
+            ? storedPresets.map(Self.clampedTimerMinutes)
+            : Self.defaultTimerPresets
+        notifiesWhenTimersEnd = defaults.object(forKey: Keys.timerNotifications) as? Bool ?? true
+        selectedShortcutNames = defaults.stringArray(forKey: Keys.selectedShortcuts) ?? []
 
         let storedEnd = defaults.double(forKey: Keys.timerEnd)
         let storedDuration = defaults.double(forKey: Keys.timerDuration)
@@ -221,6 +378,8 @@ final class ShelfController {
         heartbeat = nil
         collapseTask?.cancel()
         collapseTask = nil
+        expandTask?.cancel()
+        expandTask = nil
         weatherTask?.cancel()
         weatherTask = nil
         if let screenObserver {
@@ -234,8 +393,22 @@ final class ShelfController {
     func hoverChanged(_ isInside: Bool) {
         guard isEnabled, opensOnHover else { return }
         collapseTask?.cancel()
+        expandTask?.cancel()
+        expandTask = nil
         if isInside {
-            setExpanded(true)
+            guard hoverDelay > 0, !isExpanded else {
+                setExpanded(true)
+                return
+            }
+            let delay = hoverDelay
+            expandTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                self.expandTask = nil
+                // Open only if the pointer is still resting on the notch.
+                guard let panel = self.panel, panel.frame.contains(NSEvent.mouseLocation) else { return }
+                self.setExpanded(true)
+            }
         } else {
             collapseTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(500))
@@ -251,7 +424,76 @@ final class ShelfController {
     func toggleExpansion() {
         guard isEnabled else { return }
         collapseTask?.cancel()
+        expandTask?.cancel()
+        expandTask = nil
         setExpanded(!isExpanded)
+    }
+
+    // MARK: Widget arrangement
+
+    func isShown(_ widget: ShelfWidget) -> Bool {
+        switch widget {
+        case .nowPlaying: showsNowPlaying
+        case .dropZone: showsDropZone
+        case .reminders: showsReminders
+        case .shortcuts: showsShortcuts
+        case .switches: showsSwitches
+        case .calendar: showsCalendar
+        case .timer: showsTimer
+        case .alarm: showsAlarm
+        case .battery: showsBattery
+        case .systemHealth: showsSystemHealth
+        case .weather: showsWeather
+        case .clipboard: showsClipboard
+        }
+    }
+
+    func setShown(_ shown: Bool, for widget: ShelfWidget) {
+        switch widget {
+        case .nowPlaying: showsNowPlaying = shown
+        case .dropZone: showsDropZone = shown
+        case .reminders: showsReminders = shown
+        case .shortcuts: showsShortcuts = shown
+        case .switches: showsSwitches = shown
+        case .calendar: showsCalendar = shown
+        case .timer: showsTimer = shown
+        case .alarm: showsAlarm = shown
+        case .battery: showsBattery = shown
+        case .systemHealth: showsSystemHealth = shown
+        case .weather: showsWeather = shown
+        case .clipboard: showsClipboard = shown
+        }
+    }
+
+    /// The enabled widgets, arranged into the rows Shelf draws.
+    var widgetRows: [[ShelfWidget]] {
+        ShelfWidget.rows(for: widgetOrder.filter(isShown))
+    }
+
+    func canMoveWidget(_ widget: ShelfWidget, by offset: Int) -> Bool {
+        guard let index = widgetOrder.firstIndex(of: widget) else { return false }
+        return widgetOrder.indices.contains(index + offset)
+    }
+
+    func moveWidget(_ widget: ShelfWidget, by offset: Int) {
+        guard let index = widgetOrder.firstIndex(of: widget),
+              widgetOrder.indices.contains(index + offset) else { return }
+        widgetOrder.swapAt(index, index + offset)
+    }
+
+    func resetWidgetOrder() {
+        widgetOrder = ShelfWidget.allCases
+    }
+
+    // MARK: Timers
+
+    static func clampedTimerMinutes(_ minutes: Int) -> Int {
+        min(max(minutes, 1), 600)
+    }
+
+    func setTimerPreset(at index: Int, minutes: Int) {
+        guard timerPresets.indices.contains(index) else { return }
+        timerPresets[index] = Self.clampedTimerMinutes(minutes)
     }
 
     func startTimer(minutes: Int) {
@@ -259,6 +501,7 @@ final class ShelfController {
         timerEndDate = Date().addingTimeInterval(timerDuration)
         timerDidFinish = false
         persistTimer()
+        if notifiesWhenTimersEnd { ShelfNotifier.requestAuthorizationIfNeeded() }
         setExpanded(true)
     }
 
@@ -273,6 +516,7 @@ final class ShelfController {
         alarmDate = Date().addingTimeInterval(TimeInterval(minutes * 60))
         alarmDidFinish = false
         persistAlarm()
+        if notifiesWhenTimersEnd { ShelfNotifier.requestAuthorizationIfNeeded() }
         setExpanded(true)
     }
 
@@ -290,6 +534,7 @@ final class ShelfController {
         alarmDate = target
         alarmDidFinish = false
         persistAlarm()
+        if notifiesWhenTimersEnd { ShelfNotifier.requestAuthorizationIfNeeded() }
         setExpanded(true)
     }
 
@@ -319,33 +564,91 @@ final class ShelfController {
         droppedItems.removeAll()
     }
 
+    // Reminders, Music, and Spotify are read with AppleScript, which can take
+    // seconds. These all run in the background so Shelf never freezes Aster.
+
     func refreshReminders(requestPermission: Bool = true) {
-        guard showsReminders else { return }
-        if let loaded = ReminderAppleScript.pendingReminders(requestPermission: requestPermission) {
-            reminders = loaded
-            remindersStatus = loaded.isEmpty ? "Nothing due" : nil
-        } else {
-            remindersStatus = "Allow Aster to use Reminders"
+        guard showsReminders, !isLoadingReminders else { return }
+        isLoadingReminders = true
+        Task { @MainActor [weak self] in
+            let loaded = await ReminderAppleScript.pendingReminders(requestPermission: requestPermission)
+            guard let self else { return }
+            self.isLoadingReminders = false
+            guard self.showsReminders else { return }
+            if let loaded {
+                self.reminders = loaded
+                self.remindersStatus = loaded.isEmpty ? "Nothing due" : nil
+            } else {
+                self.remindersStatus = "Allow Aster to use Reminders"
+            }
         }
     }
 
+    /// Adds a reminder to the default list. Returns false only for an empty name;
+    /// a failure from Reminders is reported through `remindersStatus`.
     @discardableResult
     func addReminder(_ name: String) -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, ReminderAppleScript.add(trimmed) else { return false }
-        refreshReminders()
+        guard !trimmed.isEmpty else { return false }
+        Task { @MainActor [weak self] in
+            let added = await ReminderAppleScript.add(trimmed)
+            guard let self else { return }
+            if added {
+                self.refreshReminders()
+            } else {
+                self.remindersStatus = "Couldn’t add “\(trimmed)”"
+            }
+        }
         return true
     }
 
     func completeReminder(_ reminder: ShelfReminderItem) {
-        guard ReminderAppleScript.complete(id: reminder.id) else { return }
         reminders.removeAll { $0.id == reminder.id }
         if reminders.isEmpty { remindersStatus = "Nothing due" }
+        Task { @MainActor [weak self] in
+            let completed = await ReminderAppleScript.complete(id: reminder.id)
+            // Reload so the list matches Reminders, including when it refused.
+            if !completed { self?.remindersStatus = "Couldn’t complete that reminder" }
+            self?.refreshReminders(requestPermission: false)
+        }
     }
 
-    func refreshShortcuts() {
-        guard showsShortcuts else { return }
-        shortcuts = Array(ShortcutCommand.list().prefix(4))
+    /// Reads the list from the Shortcuts app. Pass `force` to load it for the
+    /// settings page while the widget itself is hidden.
+    func refreshShortcuts(force: Bool = false) {
+        guard showsShortcuts || force, !isLoadingShortcuts else { return }
+        isLoadingShortcuts = true
+        Task { @MainActor [weak self] in
+            let names = await Task.detached(priority: .utility) { ShortcutCommand.list() }.value
+            guard let self else { return }
+            self.isLoadingShortcuts = false
+            self.availableShortcuts = names
+            self.updateDisplayedShortcuts()
+        }
+    }
+
+    func isShortcutSelected(_ name: String) -> Bool {
+        selectedShortcutNames.contains(name)
+    }
+
+    var canSelectMoreShortcuts: Bool {
+        selectedShortcutNames.count < Self.maximumShortcutCount
+    }
+
+    func toggleShortcutSelection(_ name: String) {
+        if let index = selectedShortcutNames.firstIndex(of: name) {
+            selectedShortcutNames.remove(at: index)
+        } else if canSelectMoreShortcuts {
+            selectedShortcutNames.append(name)
+        }
+        updateDisplayedShortcuts()
+    }
+
+    private func updateDisplayedShortcuts() {
+        let chosen = selectedShortcutNames.filter(availableShortcuts.contains)
+        shortcuts = chosen.isEmpty
+            ? Array(availableShortcuts.prefix(Self.maximumShortcutCount))
+            : chosen
         shortcutStatus = shortcuts.isEmpty ? "Create a Shortcut to see it here" : nil
     }
 
@@ -485,6 +788,7 @@ final class ShelfController {
                 .environment(self)
                 .environment(clipboard)
                 .environment(switches)
+                .asterAccentAware()
                 .preferredColorScheme(.dark)
         )
         self.panel = panel
@@ -521,7 +825,11 @@ final class ShelfController {
     }
 
     private var shelfScreen: NSScreen? {
-        NSScreen.screens.first(where: { screen in
+        if let displayKey,
+           let chosen = NSScreen.screens.first(where: { $0.asterDisplayKey == displayKey }) {
+            return chosen
+        }
+        return NSScreen.screens.first(where: { screen in
             screen.safeAreaInsets.top > 0 ||
                 (screen.auxiliaryTopLeftArea != nil && screen.auxiliaryTopRightArea != nil)
         }) ?? NSScreen.main ?? NSScreen.screens.first
@@ -542,14 +850,7 @@ final class ShelfController {
     }
 
     private var expandedSize: NSSize {
-        let singleSlotCount = [
-            showsCalendar, showsTimer, showsAlarm, showsBattery, showsClipboard,
-            showsSystemHealth, showsWeather
-        ].filter { $0 }.count
-        let doubleSlotRows = [showsNowPlaying, showsDropZone, showsReminders, showsShortcuts, showsSwitches]
-            .filter { $0 }.count
-        let compactRows = Int(ceil(Double(singleSlotCount) / 2))
-        let rows = max(doubleSlotRows + compactRows, 1)
+        let rows = max(widgetRows.count, 1)
         let headerHeight = (showsHeaderDate || showsHeaderTime) ? 48 : 42
         let rowHeight = 132
         let rowSpacing = max(rows - 1, 0) * 10
@@ -592,18 +893,28 @@ final class ShelfController {
         runningShortcutProcesses.removeAll { !$0.isRunning }
         if let timerEndDate, timerEndDate <= now, !timerDidFinish {
             timerDidFinish = true
+            let minutes = max(Int((timerDuration / 60).rounded()), 1)
             self.timerEndDate = nil
             persistTimer()
-            NSSound.beep()
+            announce(
+                title: "Timer finished",
+                body: "Your \(minutes)-minute timer is done."
+            )
             setExpanded(true)
         }
         if let alarmDate, alarmDate <= now, !alarmDidFinish {
             alarmDidFinish = true
+            let time = alarmDate.formatted(date: .omitted, time: .shortened)
             self.alarmDate = nil
             persistAlarm()
-            NSSound.beep()
+            announce(title: "Alarm", body: "It’s \(time).")
             setExpanded(true)
         }
+    }
+
+    private func announce(title: String, body: String) {
+        if !(NSSound(named: "Glass")?.play() ?? false) { NSSound.beep() }
+        if notifiesWhenTimersEnd { ShelfNotifier.post(title: title, body: body) }
     }
 
     private func refreshBattery() {
@@ -670,7 +981,7 @@ final class ShelfController {
             if let snapshot {
                 self.applySystemNowPlaying(snapshot)
             } else {
-                self.refreshLegacyNowPlaying()
+                self.refreshLegacyNowPlaying(refreshID: refreshID)
             }
         }
     }
@@ -702,26 +1013,36 @@ final class ShelfController {
         }
     }
 
-    private func refreshLegacyNowPlaying() {
+    private func refreshLegacyNowPlaying(refreshID: UUID) {
         let runningIDs = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
         let candidates = MediaPlayerApp.allCases.filter { runningIDs.contains($0.bundleIdentifier) }
         guard !candidates.isEmpty else {
             clearNowPlaying()
             return
         }
-
-        var snapshot: MediaSnapshot?
-        for app in candidates {
-            if let candidate = MediaAppleScript.snapshot(for: app) {
-                snapshot = candidate
-                if candidate.isPlaying { break }
+        guard !isLoadingLegacyNowPlaying else { return }
+        isLoadingLegacyNowPlaying = true
+        Task { @MainActor [weak self] in
+            var snapshot: MediaSnapshot?
+            for app in candidates {
+                if let candidate = await MediaAppleScript.snapshot(for: app) {
+                    snapshot = candidate
+                    if candidate.isPlaying { break }
+                }
+            }
+            guard let self else { return }
+            self.isLoadingLegacyNowPlaying = false
+            guard self.isActive, self.showsNowPlaying,
+                  self.nowPlayingRefreshID == refreshID else { return }
+            if let snapshot {
+                self.applyLegacyNowPlaying(snapshot)
+            } else {
+                self.clearNowPlaying()
             }
         }
-        guard let snapshot else {
-            clearNowPlaying()
-            return
-        }
+    }
 
+    private func applyLegacyNowPlaying(_ snapshot: MediaSnapshot) {
         nowPlayingTitle = snapshot.title
         nowPlayingArtist = snapshot.artist
         nowPlayingAlbum = snapshot.album
@@ -742,16 +1063,20 @@ final class ShelfController {
 
     private func loadArtwork(for app: MediaPlayerApp, identity: String) {
         nowPlayingArtwork = nil
-        switch app {
-        case .music:
-            nowPlayingArtwork = MediaAppleScript.musicArtwork()
-        case .spotify:
-            guard let url = MediaAppleScript.spotifyArtworkURL() else { return }
-            Task { @MainActor [weak self] in
-                let data = try? await URLSession.shared.data(from: url).0
-                guard let self, self.lastArtworkIdentity == identity, let data else { return }
-                self.nowPlayingArtwork = NSImage(data: data)
+        Task { @MainActor [weak self] in
+            let data: Data?
+            switch app {
+            case .music:
+                data = await MediaAppleScript.musicArtworkData()
+            case .spotify:
+                if let url = await MediaAppleScript.spotifyArtworkURL() {
+                    data = try? await URLSession.shared.data(from: url).0
+                } else {
+                    data = nil
+                }
             }
+            guard let self, self.lastArtworkIdentity == identity, let data else { return }
+            self.nowPlayingArtwork = NSImage(data: data)
         }
     }
 
@@ -803,7 +1128,7 @@ enum MediaPlayerApp: String, CaseIterable {
     }
 }
 
-private struct MediaSnapshot {
+private struct MediaSnapshot: Sendable {
     let app: MediaPlayerApp
     let title: String
     let artist: String
@@ -819,9 +1144,8 @@ private enum MediaControl {
     case next
 }
 
-@MainActor
 private enum MediaAppleScript {
-    static func snapshot(for app: MediaPlayerApp) -> MediaSnapshot? {
+    static func snapshot(for app: MediaPlayerApp) async -> MediaSnapshot? {
         guard AppleEventPermission.canSendWithoutPrompt(to: app.bundleIdentifier) else {
             return nil
         }
@@ -845,21 +1169,23 @@ private enum MediaAppleScript {
             """
         }
 
-        guard let result = execute(source), result.numberOfItems >= 6,
-              let title = result.atIndex(1)?.stringValue else { return nil }
-        let state = result.atIndex(4)?.stringValue?.lowercased() ?? ""
-        return MediaSnapshot(
-            app: app,
-            title: title,
-            artist: result.atIndex(2)?.stringValue ?? "",
-            album: result.atIndex(3)?.stringValue ?? "",
-            isPlaying: state == "playing",
-            position: max(result.atIndex(5)?.doubleValue ?? 0, 0),
-            duration: max(result.atIndex(6)?.doubleValue ?? 0, 0)
-        )
+        return await AppleScriptRunner.run(source) { result -> MediaSnapshot? in
+            guard let result, result.numberOfItems >= 6,
+                  let title = result.atIndex(1)?.stringValue else { return nil }
+            let state = result.atIndex(4)?.stringValue?.lowercased() ?? ""
+            return MediaSnapshot(
+                app: app,
+                title: title,
+                artist: result.atIndex(2)?.stringValue ?? "",
+                album: result.atIndex(3)?.stringValue ?? "",
+                isPlaying: state == "playing",
+                position: max(result.atIndex(5)?.doubleValue ?? 0, 0),
+                duration: max(result.atIndex(6)?.doubleValue ?? 0, 0)
+            )
+        }
     }
 
-    static func musicArtwork() -> NSImage? {
+    static func musicArtworkData() async -> Data? {
         let source = """
         tell application "Music"
             try
@@ -869,11 +1195,13 @@ private enum MediaAppleScript {
             end try
         end tell
         """
-        guard let data = execute(source)?.data, !data.isEmpty else { return nil }
-        return NSImage(data: data)
+        return await AppleScriptRunner.run(source) { result -> Data? in
+            guard let data = result?.data, !data.isEmpty else { return nil }
+            return data
+        }
     }
 
-    static func spotifyArtworkURL() -> URL? {
+    static func spotifyArtworkURL() async -> URL? {
         let source = """
         tell application "Spotify"
             try
@@ -883,8 +1211,9 @@ private enum MediaAppleScript {
             end try
         end tell
         """
-        guard let urlString = execute(source)?.stringValue else { return nil }
-        return URL(string: urlString)
+        return await AppleScriptRunner.run(source) { result -> URL? in
+            result?.stringValue.flatMap(URL.init(string:))
+        }
     }
 
     static func control(_ control: MediaControl, app: MediaPlayerApp) {
@@ -894,12 +1223,50 @@ private enum MediaAppleScript {
         case .playPause: command = "playpause"
         case .next: command = "next track"
         }
-        _ = execute("tell application \"\(app.rawValue)\" to \(command)")
+        let source = "tell application \"\(app.rawValue)\" to \(command)"
+        Task { _ = await AppleScriptRunner.succeeds(source) }
+    }
+}
+
+/// Posts a notification when a Shelf timer or alarm ends.
+@MainActor
+enum ShelfNotifier {
+    private final class Presenter: NSObject, UNUserNotificationCenterDelegate {
+        func userNotificationCenter(
+            _ center: UNUserNotificationCenter,
+            willPresent notification: UNNotification
+        ) async -> UNNotificationPresentationOptions {
+            // Show the banner even while Aster is the frontmost app.
+            [.banner, .list]
+        }
     }
 
-    private static func execute(_ source: String) -> NSAppleEventDescriptor? {
-        var error: NSDictionary?
-        return NSAppleScript(source: source)?.executeAndReturnError(&error)
+    private static let presenter = Presenter()
+
+    /// Notifications need a real app bundle; a bare development executable has none.
+    static var isAvailable: Bool {
+        Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
+    }
+
+    static func requestAuthorizationIfNeeded() {
+        guard isAvailable else { return }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = presenter
+        center.requestAuthorization(options: [.alert]) { _, _ in }
+    }
+
+    static func post(title: String, body: String) {
+        guard isAvailable else { return }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = presenter
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        center.add(UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        ))
     }
 }
 

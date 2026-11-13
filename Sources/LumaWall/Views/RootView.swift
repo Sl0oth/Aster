@@ -1,5 +1,4 @@
 import AppKit
-import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -33,7 +32,7 @@ struct RootView: View {
                 HStack {
                     Text("Aster")
                         .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(Color.asterDeepPurple)
+                        .foregroundStyle(Color.asterAccentDeep)
                     Spacer()
                     if updates.state == .updateAvailable || updates.state == .downloading || updates.state == .downloaded {
                         Button { showsUpdateDetails = true } label: {
@@ -62,6 +61,7 @@ struct RootView: View {
                 }
             }
         }
+        .asterAccentAware()
         .background(TransparentWindowConfigurator().allowsHitTesting(false))
         .fileImporter(
             isPresented: $isImporterPresented,
@@ -94,6 +94,9 @@ struct RootView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openAsterBar)) { _ in
             selectedModule = .bar
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .asterIntroductionsReset)) { _ in
+            seenModuleIntroductions = []
         }
         .task {
             shelf.activate(clipboard: clipboard, switches: switches)
@@ -168,7 +171,7 @@ private struct AsterBackground: View {
             Rectangle().fill(.ultraThinMaterial)
             Color.black.opacity(0.16)
             RadialGradient(
-                colors: [Color.asterPurple.opacity(0.08), .clear],
+                colors: [Color.asterAccent.opacity(0.08), .clear],
                 center: .bottomTrailing,
                 startRadius: 20,
                 endRadius: 720
@@ -203,6 +206,8 @@ private struct AsterSidebar: View {
                             selection == module ? Color.white.opacity(0.10) : .clear,
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                         )
+                        // Make the whole row clickable, not just the icon and title.
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .optionalKeyboardShortcut(shortcut)
@@ -218,6 +223,7 @@ private struct AsterSidebar: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
                     .frame(height: 40)
+                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
@@ -374,689 +380,6 @@ struct ModuleHeader<Trailing: View>: View {
     }
 }
 
-private struct CanvasModuleView: View {
-    @Environment(WallpaperLibrary.self) private var library
-    @Environment(WallpaperController.self) private var controller
-    @Binding var showImporter: Bool
-    @State private var isSelectingShuffleItems = false
-
-    var body: some View {
-        @Bindable var controller = controller
-        VStack(spacing: 0) {
-            ModuleHeader(module: .canvas) {
-                HStack(spacing: 12) {
-                    Toggle("Enable Canvas", isOn: $controller.isEnabled)
-                        .toggleStyle(.switch)
-                    Button {
-                        isSelectingShuffleItems.toggle()
-                    } label: {
-                        Label(
-                            isSelectingShuffleItems ? "Done selecting" : "Select for shuffle",
-                            systemImage: isSelectingShuffleItems ? "checkmark" : "shuffle"
-                        )
-                    }
-                    .buttonStyle(AsterButtonStyle(prominent: false))
-                    .disabled(!controller.isEnabled)
-                    Button { showImporter = true } label: { Label("Add wallpaper", systemImage: "plus") }
-                        .buttonStyle(AsterButtonStyle(prominent: true))
-                        .disabled(!controller.isEnabled)
-                }
-            }
-            HStack(spacing: 18) {
-                CanvasLibrary(
-                    showImporter: $showImporter,
-                    isSelectingShuffleItems: $isSelectingShuffleItems
-                )
-                CanvasInspector(isSelectingShuffleItems: $isSelectingShuffleItems)
-                    .frame(width: 300)
-            }
-            .padding(22)
-            .disabled(!controller.isEnabled)
-            .opacity(controller.isEnabled ? 1 : 0.55)
-        }
-        .onChange(of: library.items) { _, _ in
-            controller.validateShuffleSelection(in: library)
-        }
-    }
-}
-
-private struct CanvasBackdrop: View {
-    @Environment(WallpaperLibrary.self) private var library
-    let item: WallpaperItem?
-
-    var body: some View {
-        GeometryReader { viewport in
-            ZStack {
-                Color.clear
-                if let item {
-                    if item.kind == .image, let image = NSImage(contentsOf: library.url(for: item)) {
-                        Image(nsImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: viewport.size.width, height: viewport.size.height)
-                            .clipped()
-                    } else if item.kind == .video {
-                        CanvasVideoBackdrop(url: library.url(for: item))
-                            .frame(width: viewport.size.width, height: viewport.size.height)
-                            .clipped()
-                    }
-                    Color.black.opacity(0.57)
-                    LinearGradient(
-                        colors: [.black.opacity(0.18), Color.asterDeepPurple.opacity(0.13)],
-                        startPoint: .top,
-                        endPoint: .bottomTrailing
-                    )
-                }
-            }
-            .frame(width: viewport.size.width, height: viewport.size.height)
-            .animation(.easeInOut(duration: 0.24), value: item?.id)
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-private struct CanvasVideoBackdrop: View {
-    let url: URL
-    @State private var thumbnail: NSImage?
-
-    var body: some View {
-        Group {
-            if let thumbnail {
-                Image(nsImage: thumbnail).resizable().scaledToFill()
-            } else {
-                Color.black.opacity(0.2)
-            }
-        }
-        .task(id: url) { thumbnail = await VideoThumbnailCache.image(for: url) }
-    }
-}
-
-private struct CanvasLibrary: View {
-    @Environment(WallpaperLibrary.self) private var library
-    @Environment(WallpaperController.self) private var controller
-    @Binding var showImporter: Bool
-    @Binding var isSelectingShuffleItems: Bool
-    private let columns = [GridItem(.adaptive(minimum: 190), spacing: 14)]
-
-    var body: some View {
-        @Bindable var library = library
-        VStack(spacing: 14) {
-            if isSelectingShuffleItems {
-                HStack(spacing: 10) {
-                    Label("Choose wallpapers", systemImage: "checkmark.circle")
-                        .font(.subheadline.weight(.semibold))
-                    Text("\(controller.shuffleSelectionCount(in: library)) selected")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Done") { isSelectingShuffleItems = false }
-                        .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 2)
-            }
-            HStack(spacing: 10) {
-                TextField("Search wallpapers", text: $library.searchText)
-                    .textFieldStyle(.roundedBorder)
-                Picker("Type", selection: $library.mediaFilter) {
-                    ForEach(WallpaperLibrary.MediaFilter.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .labelsHidden()
-                .frame(width: 95)
-                Picker("Sort", selection: $library.sortOrder) {
-                    ForEach(WallpaperLibrary.SortOrder.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .labelsHidden()
-                .frame(width: 105)
-            }
-            if library.items.isEmpty {
-                ContentUnavailableView {
-                    Label("Make this Mac yours", systemImage: "photo.on.rectangle.angled")
-                } description: {
-                    Text("Add an image or video, or find a live wallpaper online.")
-                } actions: {
-                    VStack(spacing: 12) {
-                        Button("Choose a file") { showImporter = true }
-                            .buttonStyle(AsterButtonStyle(prominent: true))
-                        HStack(spacing: 10) {
-                            CanvasWallpaperSourceLink(
-                                title: "MotionBGs",
-                                url: URL(string: "https://motionbgs.com/")!
-                            )
-                            CanvasWallpaperSourceLink(
-                                title: "MoeWalls",
-                                url: URL(string: "https://moewalls.com/")!
-                            )
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if library.filteredItems.isEmpty {
-                ContentUnavailableView {
-                    Label("No matching wallpapers", systemImage: "magnifyingglass")
-                } description: {
-                    Text("Try another search or filter.")
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 14) {
-                        ForEach(library.filteredItems) { item in
-                            WallpaperCard(
-                                item: item,
-                                isSelectingShuffleItems: isSelectingShuffleItems
-                            )
-                        }
-                    }
-                    .padding(1)
-                }
-            }
-        }
-        .padding(16)
-        .glassPanel()
-        .dropDestination(for: URL.self) { urls, _ in
-            (try? library.importFiles(urls))?.isEmpty == false
-        }
-    }
-}
-
-private struct CanvasWallpaperSourceLink: View {
-    let title: String
-    let url: URL
-
-    var body: some View {
-        Link(destination: url) {
-            Label(title, systemImage: "arrow.up.right.square")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.asterPurple)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .background(.white.opacity(0.055), in: Capsule())
-                .overlay(Capsule().stroke(.white.opacity(0.08), lineWidth: 0.7))
-        }
-        .buttonStyle(.plain)
-        .help("Open \(url.host ?? title) in your browser")
-    }
-}
-
-private struct WallpaperCard: View {
-    @Environment(WallpaperLibrary.self) private var library
-    @Environment(WallpaperController.self) private var controller
-    let item: WallpaperItem
-    let isSelectingShuffleItems: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            WallpaperThumbnail(item: item)
-                .frame(height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(alignment: .topLeading) {
-                    Label(item.mediaLabel, systemImage: item.mediaSymbol)
-                        .font(.system(size: 9, weight: .semibold))
-                        .padding(.horizontal, 7).padding(.vertical, 5)
-                        .background(.black.opacity(0.58), in: Capsule())
-                        .padding(7)
-                }
-                .overlay(alignment: .topTrailing) {
-                    Button(role: .destructive) { library.remove(item) } label: {
-                        Image(systemName: "trash")
-                            .font(.caption.weight(.semibold))
-                            .frame(width: 26, height: 26)
-                            .background(.black.opacity(0.58), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Remove from Canvas")
-                    .padding(7)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    HStack(spacing: 4) {
-                        ForEach(assignedDestinations) { destination in
-                            Text(destination.badge)
-                                .font(.system(size: 9, weight: .bold, design: .rounded))
-                                .frame(width: 20, height: 20)
-                                .background(Color.asterPurple.opacity(0.88), in: Circle())
-                                .help(destination.rawValue)
-                        }
-                    }
-                    .padding(7)
-                }
-                .overlay(alignment: .bottomLeading) {
-                    if isSelectingShuffleItems {
-                        Image(systemName: controller.isSelectedForShuffle(item) ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(
-                                item.canShuffle
-                                    ? (controller.isSelectedForShuffle(item) ? Color.asterPurple : .white)
-                                    : .gray
-                            )
-                            .padding(7)
-                    }
-                }
-            Text(item.name).font(.subheadline.weight(.medium)).lineLimit(1)
-        }
-        .padding(9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(library.selectedID == item.id ? 0.11 : 0.04), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(library.selectedID == item.id ? Color.asterPurple : .white.opacity(0.07)))
-        .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .onTapGesture {
-            if isSelectingShuffleItems {
-                if item.canShuffle {
-                    controller.toggleShuffleSelection(item)
-                }
-            } else {
-                library.selectedID = item.id
-            }
-        }
-        .help(item.name)
-        .contextMenu {
-            Button("Set as Desktop") { controller.apply(item, url: library.url(for: item)) }
-            Button("Set as Manual-Lock Still") { controller.configureLockScreen(item, url: library.url(for: item)) }
-                .disabled(!item.canUseAsLockScreenStill)
-            Button("Set as Screen Saver") { controller.configureScreenSaver(item, url: library.url(for: item)) }
-            if item.canShuffle {
-                Divider()
-                Button(controller.isSelectedForShuffle(item) ? "Remove from Shuffle" : "Add to Shuffle") {
-                    controller.toggleShuffleSelection(item)
-                }
-            }
-            Divider()
-            Button("Remove", role: .destructive) { library.remove(item) }
-        }
-    }
-
-    private var assignedDestinations: [WallpaperController.CanvasDestination] {
-        WallpaperController.CanvasDestination.allCases.filter {
-            controller.assignedItemID(for: $0) == item.id
-        }
-    }
-}
-
-private struct WallpaperThumbnail: View {
-    @Environment(WallpaperLibrary.self) private var library
-    let item: WallpaperItem
-
-    var body: some View {
-        GeometryReader { viewport in
-            ZStack {
-                Color.black.opacity(0.25)
-                if item.kind == .image, let image = NSImage(contentsOf: library.url(for: item)) {
-                    Image(nsImage: image)
-                        .resizable().scaledToFill()
-                        .frame(width: max(viewport.size.width, 1), height: max(viewport.size.height, 1))
-                        .clipped()
-                } else if item.kind == .video {
-                    VideoFramePreview(url: library.url(for: item))
-                        .frame(width: max(viewport.size.width, 1), height: max(viewport.size.height, 1))
-                        .clipped()
-                } else {
-                    LinearGradient(colors: [Color.asterPurple.opacity(0.75), .indigo.opacity(0.35)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    Image(systemName: "play.fill").font(.title2)
-                }
-            }
-            .frame(width: viewport.size.width, height: viewport.size.height)
-            .clipped()
-        }
-    }
-}
-
-private struct VideoFramePreview: View {
-    let url: URL
-    @State private var thumbnail: NSImage?
-
-    var body: some View {
-        ZStack {
-            if let thumbnail {
-                Image(nsImage: thumbnail).resizable().scaledToFill()
-            } else {
-                LinearGradient(
-                    colors: [Color.asterPurple.opacity(0.42), .black.opacity(0.42)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                Image(systemName: "film").foregroundStyle(.secondary)
-            }
-            Image(systemName: "play.fill")
-                .font(.caption.weight(.bold))
-                .padding(8)
-                .background(.black.opacity(0.52), in: Circle())
-        }
-        .task(id: url) {
-            thumbnail = await VideoThumbnailCache.image(for: url)
-        }
-    }
-}
-
-@MainActor
-private enum VideoThumbnailCache {
-    private static let cache = NSCache<NSString, NSImage>()
-
-    static func image(for url: URL) async -> NSImage? {
-        let key = url.path as NSString
-        if let cached = cache.object(forKey: key) { return cached }
-
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = NSSize(width: 640, height: 400)
-        let time = CMTime(seconds: 0.1, preferredTimescale: 600)
-        guard let result = try? await generator.image(at: time) else { return nil }
-        let image = NSImage(cgImage: result.image, size: .zero)
-        cache.setObject(image, forKey: key)
-        return image
-    }
-}
-
-private struct CanvasInspector: View {
-    @Environment(WallpaperLibrary.self) private var library
-    @Environment(WallpaperController.self) private var controller
-    @Binding var isSelectingShuffleItems: Bool
-
-    var body: some View {
-        @Bindable var controller = controller
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Editing").font(.headline)
-                Picker("Destination", selection: $controller.editingDestination) {
-                    ForEach(WallpaperController.CanvasDestination.allCases) { destination in
-                        Text(destination.displayName).tag(destination)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(height: 28)
-                Text(destinationHelp)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            Text("Preview").font(.headline)
-            Group {
-                if let item = library.selectedItem { WallpaperThumbnail(item: item) }
-                else { Color.white.opacity(0.03).overlay(Image(systemName: "display").font(.largeTitle).foregroundStyle(.tertiary)) }
-            }
-            .frame(height: 165)
-            .clipShape(RoundedRectangle(cornerRadius: 15))
-            .overlay(RoundedRectangle(cornerRadius: 15).stroke(.white.opacity(0.09)))
-
-            if let item = library.selectedItem {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.name).font(.title3.weight(.semibold)).lineLimit(2)
-                    Text(item.mediaLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Picker("Fit", selection: $controller.fillMode) {
-                ForEach(WallpaperController.FillMode.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("Wallpaper shuffle", systemImage: "shuffle")
-                        .font(.headline)
-                    Spacer()
-                    Text("\(controller.shuffleSelectionCount(in: library)) selected")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Text("Rotate selected images, GIFs, and videos on your Desktop.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Button(controller.shuffleSelectionCount(in: library) == 0 ? "Choose images" : "Edit selection") {
-                        isSelectingShuffleItems = true
-                    }
-                    .buttonStyle(.plain)
-                    Spacer()
-                    Picker("Rate", selection: $controller.shuffleRate) {
-                        ForEach(WallpaperController.ShuffleRate.allCases) { rate in
-                            Text(rate.label).tag(rate)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 122)
-                }
-                Button {
-                    if controller.isShuffling {
-                        controller.stopShuffle()
-                    } else {
-                        controller.startShuffle(in: library)
-                    }
-                } label: {
-                    Label(
-                        controller.isShuffling ? "Stop Shuffle" : "Start Shuffle",
-                        systemImage: controller.isShuffling ? "stop.fill" : "play.fill"
-                    )
-                    .frame(maxWidth: .infinity)
-                }
-                .disabled(!controller.isShuffling && controller.shuffleSelectionCount(in: library) < 2)
-                .buttonStyle(AsterButtonStyle(prominent: controller.isShuffling == false))
-                Text(shuffleHelp)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(12)
-            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
-
-            DisclosureGroup("Smart Pause") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Toggle(
-                        "Pause when another app is full screen",
-                        isOn: $controller.pauseMotionForFullScreenApps
-                    )
-                    Toggle(
-                        "Pause during high system load",
-                        isOn: $controller.pauseMotionForHighSystemLoad
-                    )
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text("CPU threshold")
-                            Spacer()
-                            Text("\(Int(controller.highSystemLoadThreshold))%")
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(
-                            value: $controller.highSystemLoadThreshold,
-                            in: 50...95,
-                            step: 5
-                        )
-                        Text("Pauses after sustained load and resumes below \(max(Int(controller.highSystemLoadThreshold) - 10, 0))%.")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .disabled(!controller.pauseMotionForHighSystemLoad)
-                    .opacity(controller.pauseMotionForHighSystemLoad ? 1 : 0.5)
-                    Toggle(
-                        "Pause while Low Power Mode is on",
-                        isOn: $controller.pauseMotionInLowPowerMode
-                    )
-                    Text("Optional: leave this off to keep motion playing whenever the desktop is visible.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Label(
-                        controller.smartPauseStatusMessage,
-                        systemImage: controller.isMotionWallpaperPaused
-                            ? "pause.circle.fill"
-                            : "gauge.with.dots.needle.33percent"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(
-                        controller.isMotionWallpaperPaused
-                            ? Color.asterPurple
-                            : Color.white.opacity(0.38)
-                    )
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .toggleStyle(.switch)
-                .padding(.top, 8)
-            }
-            .font(.subheadline)
-
-            DisclosureGroup("Playback & launch") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Resume motion wallpaper when Aster opens", isOn: $controller.autoResumeMotionWallpaper)
-                    Toggle("Open Aster at login", isOn: Binding(
-                        get: { controller.launchAtLogin },
-                        set: { controller.setLaunchAtLogin($0) }
-                    ))
-                    Text(controller.launchAtLoginStatusMessage)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    if library.selectedItem?.kind == .video {
-                        Toggle("Mute video audio", isOn: $controller.muted)
-                    }
-                }
-                .toggleStyle(.switch)
-                .padding(.top, 8)
-            }
-            .font(.subheadline)
-
-            DisclosureGroup("Screen Saver protection") {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Label("Rotate Canvas backgrounds", systemImage: "rectangle.stack.badge.play")
-                        Spacer()
-                        Picker("Rotate Canvas backgrounds", selection: $controller.screenSaverRotationInterval) {
-                            ForEach(WallpaperController.ScreenSaverRotationInterval.allCases) { interval in
-                                Text(interval.label).tag(interval)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 150)
-                    }
-                    Text("Cycles through every background currently in your Canvas library without repeating one until the set has rotated. Choose Off to keep the selected saver fixed.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Label("Pixel shift", systemImage: "arrow.up.left.and.arrow.down.right")
-                        Spacer()
-                        Picker("Pixel shift", selection: $controller.screenSaverShiftInterval) {
-                            ForEach(WallpaperController.ScreenSaverShiftInterval.allCases) { interval in
-                                Text(interval.label).tag(interval)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 150)
-                    }
-                    Text("Slightly enlarges and moves Screen Saver content so bright details do not stay on the same pixels. Choose Off to keep it fixed.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.top, 8)
-            }
-            .font(.subheadline)
-
-            DisclosureGroup("Lock Screen details") {
-                VStack(alignment: .leading, spacing: 9) {
-                    Label("Automatic lock uses Screen Saver", systemImage: "sparkles.rectangle.stack")
-                        .font(.caption.weight(.semibold))
-                    Text("If the Screen Saver is already running when macOS locks automatically, its animation stays visible.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Label("Manual lock and lid close use a still", systemImage: "lock.display")
-                        .font(.caption.weight(.semibold))
-                    Text("Choose that still under Manual-Lock Still. GIFs and videos are intentionally unavailable there.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if controller.screenSaverIsInstalled {
-                        Button("Open Screen Saver Settings") { controller.openScreenSaverSettings() }
-                            .buttonStyle(.plain)
-                    }
-                    Text(controller.screenSaverStatusMessage)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.top, 8)
-            }
-            .font(.subheadline)
-
-            if let item = library.selectedItem {
-                HStack {
-                    Button { NSWorkspace.shared.activateFileViewerSelecting([library.url(for: item)]) } label: {
-                        Label("Show in Finder", systemImage: "folder")
-                    }
-                    .buttonStyle(.plain)
-                    Spacer()
-                    Button(role: .destructive) { library.remove(item) } label: {
-                        Label("Remove", systemImage: "trash")
-                    }
-                    .buttonStyle(.plain)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Label(destinationStatus, systemImage: controller.assignedItemID(for: controller.editingDestination) == nil ? "circle" : "checkmark.circle.fill")
-                .font(.caption).foregroundStyle(.secondary)
-            Button {
-                if let item = library.selectedItem { controller.assign(item, url: library.url(for: item)) }
-            } label: {
-                Group {
-                    if controller.editingDestination == .desktop && controller.isApplying {
-                        Label("Applying…", systemImage: "hourglass")
-                    } else {
-                        Label(actionLabel, systemImage: controller.editingDestination.symbol)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .disabled(
-                library.selectedItem == nil
-                    || (controller.editingDestination == .desktop && controller.isApplying)
-                    || lockSelectionIsMotion
-            )
-            .buttonStyle(AsterButtonStyle(prominent: true))
-            if controller.editingDestination == .desktop && controller.isAnimating {
-                Button("Stop motion wallpaper") { controller.stopAnimatedWallpaper() }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-            }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(18)
-        }
-        .glassPanel()
-    }
-
-    private var destinationHelp: String {
-        switch controller.editingDestination {
-        case .desktop: "The wallpaper behind your windows."
-        case .lockScreen: "A still shown after manual lock, lid close, or wake."
-        case .screenSaver: "Animated while idle and retained when that session auto-locks."
-        }
-    }
-
-    private var shuffleHelp: String {
-        if controller.isShuffling {
-            return "Running every \(controller.shuffleRate.label)."
-        }
-        if controller.shuffleSelectionCount(in: library) < 2 {
-            return "Select at least two wallpapers."
-        }
-        return "Ready to change every \(controller.shuffleRate.label)."
-    }
-
-    private var destinationStatus: String {
-        controller.editingDestination == .desktop
-            ? controller.statusMessage
-            : controller.screenSaverStatusMessage
-    }
-
-    private var actionLabel: String {
-        guard let item = library.selectedItem else { return "Choose Media" }
-        return switch controller.editingDestination {
-        case .desktop: item.kind == .video ? "Play on Desktop" : "Set Desktop"
-        case .lockScreen: lockSelectionIsMotion ? "Still Images Only" : "Set Manual-Lock Still"
-        case .screenSaver: "Set Screen Saver"
-        }
-    }
-
-    private var lockSelectionIsMotion: Bool {
-        guard controller.editingDestination == .lockScreen,
-              let item = library.selectedItem else { return false }
-        return !item.canUseAsLockScreenStill
-    }
-}
-
 private struct ClipsModuleView: View {
     @Environment(ClipboardManager.self) private var clipboard
     @Environment(ShortcutStore.self) private var shortcuts
@@ -1065,6 +388,8 @@ private struct ClipsModuleView: View {
     @State private var newBoardName = ""
     @State private var boardToRename: ClipboardBoard?
     @State private var renamedBoardName = ""
+    @State private var isConfirmingClear = false
+    @State private var showsOptions = false
 
     var body: some View {
         @Bindable var clipboard = clipboard
@@ -1079,15 +404,31 @@ private struct ClipsModuleView: View {
                 )
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
+                if clipboard.isMonitoring && clipboard.isCapturePaused {
+                    Button("Capture paused — Resume") { clipboard.isCapturePaused = false }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.asterAccentLight)
+                }
                 Toggle("Monitor clipboard", isOn: $clipboard.isMonitoring)
                     .toggleStyle(.switch)
+                Button { showsOptions.toggle() } label: {
+                    Label("Options", systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(AsterButtonStyle(prominent: false))
+                .popover(isPresented: $showsOptions, arrowEdge: .bottom) {
+                    ClipsOptionsView()
+                        .environment(clipboard)
+                        .padding(18)
+                        .frame(width: 360)
+                }
             }
             VStack(spacing: 0) {
                 clipsToolbar
                 Divider().overlay(.white.opacity(0.06))
                 if !clipboard.isMonitoring && clipboard.entries.isEmpty {
                     VStack(spacing: 15) {
-                        Image(systemName: "doc.on.clipboard").font(.system(size: 42)).foregroundStyle(Color.asterPurple)
+                        Image(systemName: "doc.on.clipboard").font(.system(size: 42)).foregroundStyle(Color.asterAccent)
                         Text("Clipboard history is off").font(.title2.weight(.semibold))
                         Text("Aster only watches your clipboard after you enable it. Password managers and Keychain are ignored automatically.")
                             .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 460)
@@ -1137,6 +478,12 @@ private struct ClipsModuleView: View {
                 if let boardToRename { clipboard.renameBoard(boardToRename.id, to: renamedBoardName) }
                 boardToRename = nil
             }
+        }
+        .alert("Clear clipboard history?", isPresented: $isConfirmingClear) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear History", role: .destructive) { clipboard.clearHistory() }
+        } message: {
+            Text(ClipsCopy.clearHistoryMessage(boardClipCount: clipboard.boardClipCount))
         }
     }
 
@@ -1188,7 +535,7 @@ private struct ClipsModuleView: View {
             Spacer(minLength: 8)
             Text("\(clipboard.entries.count)")
                 .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
-            Button("Clear", role: .destructive) { clipboard.clearHistory() }
+            Button("Clear…", role: .destructive) { isConfirmingClear = true }
                 .buttonStyle(.plain)
                 .font(.caption)
                 .disabled(clipboard.entries.isEmpty)
@@ -1224,9 +571,9 @@ struct ClipboardBoardChip: View {
                 .lineLimit(1)
                 .padding(.horizontal, 11)
                 .frame(height: 27)
-                .foregroundStyle(isActive ? Color.asterPurple : .secondary)
-                .background(isActive ? Color.asterPurple.opacity(0.14) : .clear, in: Capsule())
-                .overlay(Capsule().stroke(isActive ? Color.asterPurple.opacity(0.45) : .clear))
+                .foregroundStyle(isActive ? Color.asterAccent : .secondary)
+                .background(isActive ? Color.asterAccent.opacity(0.14) : .clear, in: Capsule())
+                .overlay(Capsule().stroke(isActive ? Color.asterAccent.opacity(0.45) : .clear))
         }
         .buttonStyle(.plain)
     }
@@ -1324,10 +671,8 @@ struct ClipboardPreviewCard: View {
     private var clipPreview: some View {
         switch entry.kind {
         case .image:
-            if let url = clipboard.imageURL(for: entry), let image = NSImage(contentsOf: url) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
+            if let url = clipboard.imageURL(for: entry) {
+                ClipImageThumbnail(url: url)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
@@ -1421,109 +766,9 @@ private extension View {
     }
 }
 
-private struct ShelfModuleView: View {
-    @Environment(ShelfController.self) private var shelf
-
-    var body: some View {
-        @Bindable var shelf = shelf
-        VStack(spacing: 0) {
-            ModuleHeader(module: .shelf) {
-                Toggle("Enable Shelf", isOn: $shelf.isEnabled).toggleStyle(.switch)
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                        HStack(spacing: 16) {
-                            ZStack(alignment: .top) {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(.white.opacity(0.055))
-                                    .frame(width: 76, height: 50)
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .stroke(.white.opacity(0.08), lineWidth: 0.7)
-                                    }
-                                UnevenRoundedRectangle(bottomLeadingRadius: 8, bottomTrailingRadius: 8)
-                                    .fill(.black)
-                                    .frame(width: 35, height: 13)
-                                Image(systemName: "cursorarrow.motionlines")
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(Color.asterPurple)
-                                    .offset(y: 24)
-                            }
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Move your pointer behind the notch")
-                                    .font(.system(size: 15, weight: .semibold))
-                                Text("Push your pointer into the top-center edge of the display, directly behind the notch, and Shelf will open.")
-                                    .font(.system(size: 12.5))
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Spacer(minLength: 12)
-
-                            Button(shelf.isExpanded ? "Close Shelf" : "Open Shelf now") {
-                                shelf.toggleExpansion()
-                            }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(shelf.isEnabled ? Color.asterPurple : Color.secondary)
-                            .disabled(!shelf.isEnabled)
-                        }
-                        .padding(16)
-                        .background(.thinMaterial.opacity(0.34), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .stroke(.white.opacity(0.08), lineWidth: 0.7)
-                        }
-
-                        EditorSection(title: "Behavior", subtitle: "Shelf lives behind the notch and stays out of the Dock.") {
-                            Toggle("Open when pointer reaches the notch", isOn: $shelf.opensOnHover)
-                            Slider(value: $shelf.shelfWidth, in: 360...620) { Text("Width") }
-                            HStack { Text("Shelf width"); Spacer(); Text("\(Int(shelf.shelfWidth)) px").foregroundStyle(.secondary) }
-                        }
-                        EditorSection(title: "Appearance", subtitle: "Keep only the details you want to see.") {
-                            Toggle("Outer outline", isOn: $shelf.showsOutline)
-                            Toggle("Header date", isOn: $shelf.showsHeaderDate)
-                            Toggle("Header time", isOn: $shelf.showsHeaderTime)
-                        }
-                        EditorSection(title: "Widgets", subtitle: "Every widget is optional. Reminders asks before accessing the Reminders app; Weather only sends the city you enter.") {
-                            Toggle(isOn: $shelf.showsNowPlaying) { Label("Now Playing — 2 slots", systemImage: "play.square.stack.fill") }
-                            Toggle(isOn: $shelf.showsDropZone) { Label("Drop Zone — 2 slots", systemImage: "tray.and.arrow.down.fill") }
-                            Toggle(isOn: $shelf.showsReminders) { Label("Reminders — 2 slots", systemImage: "checklist") }
-                            Toggle(isOn: $shelf.showsShortcuts) { Label("Shortcuts — 2 slots", systemImage: "square.2.layers.3d.fill") }
-                            Toggle(isOn: $shelf.showsSwitches) { Label("Switch — 2 slots", systemImage: "switch.2") }
-                            Toggle(isOn: $shelf.showsCalendar) { Label("Calendar", systemImage: "calendar") }
-                            Toggle(isOn: $shelf.showsTimer) { Label("Quick Timer", systemImage: "timer") }
-                            Toggle(isOn: $shelf.showsAlarm) { Label("Alarm", systemImage: "alarm.fill") }
-                            Toggle(isOn: $shelf.showsBattery) { Label("Battery", systemImage: "battery.100percent") }
-                            Toggle(isOn: $shelf.showsSystemHealth) { Label("System Health", systemImage: "gauge.with.dots.needle.67percent") }
-                            Toggle(isOn: $shelf.showsWeather) { Label("Weather", systemImage: "cloud.sun.fill") }
-                            Toggle(isOn: $shelf.showsClipboard) { Label("Latest Clip", systemImage: "doc.on.clipboard") }
-                        }
-                        EditorSection(title: "Weather location", subtitle: "Aster sends this city name to Open-Meteo only while the Weather widget is enabled.") {
-                            TextField("City or postal code", text: $shelf.weatherLocation)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit { shelf.refreshWeather() }
-                            HStack {
-                                Text(shelf.weather?.locationName ?? shelf.weatherStatus ?? "No location selected")
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                Spacer()
-                                Button("Update") { shelf.refreshWeather() }
-                                    .buttonStyle(.plain).foregroundStyle(Color.asterPurple)
-                                    .disabled(shelf.weatherLocation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            }
-                        }
-                }
-                .frame(maxWidth: 760)
-                .frame(maxWidth: .infinity)
-                .padding(22)
-            }
-        }
-    }
-}
-
 private struct BarModuleView: View {
     @Environment(BarController.self) private var bar
+    @Environment(ShortcutStore.self) private var shortcuts
 
     var body: some View {
         @Bindable var bar = bar
@@ -1534,12 +779,36 @@ private struct BarModuleView: View {
                     EditorSection(title: "Menu bar behavior", subtitle: "Aster uses native macOS status items. No Accessibility permission is needed.") {
                         Toggle("Use compact divider spacing", isOn: $bar.compactSpacing)
                         Toggle("Remember collapsed state", isOn: $bar.rememberCollapsedState)
+                        HStack {
+                            Text("Hide icons again")
+                            Spacer()
+                            Picker("Hide icons again", selection: $bar.autoCollapseDelay) {
+                                ForEach(BarController.autoCollapseChoices, id: \.self) { seconds in
+                                    Text(seconds == 0 ? "Never" : "After \(seconds) seconds").tag(seconds)
+                                }
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                        }
+                        HStack {
+                            Text("Keyboard shortcut")
+                            Spacer()
+                            Text(shortcuts.isDisabled(.toggleBar)
+                                 ? "Off"
+                                 : shortcuts.binding(for: .toggleBar).display)
+                                .font(.system(.body, design: .rounded).weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(bar.hotkeyError ?? "Shows or hides the icons from any app. Change or turn it off in Keys.")
+                            .font(.caption)
+                            .foregroundStyle(bar.hotkeyError == nil ? Color.secondary : Color.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                         if bar.isEnabled {
                             Button(bar.isCollapsed ? "Show utility icons" : "Hide utility icons") {
                                 bar.toggle()
                             }
                             .buttonStyle(.plain)
-                            .foregroundStyle(Color.asterPurple)
+                            .foregroundStyle(Color.asterAccent)
                         }
                     }
                     EditorSection(title: "Icon spacing", subtitle: "Changes the spacing between real menu-bar items across macOS.") {
@@ -1563,7 +832,7 @@ private struct BarModuleView: View {
                                 bar.applyMenuBarSpacing()
                             }
                             .buttonStyle(.plain)
-                            .foregroundStyle(Color.asterPurple)
+                            .foregroundStyle(Color.asterAccent)
                             .disabled(bar.isApplyingMenuBarSpacing || !bar.hasUnappliedMenuBarSpacing)
                         }
                         Text(bar.spacingStatusMessage)
@@ -1589,7 +858,7 @@ private struct BarModuleView: View {
                             bar.resetStatusItemPositions()
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(Color.asterPurple)
+                        .foregroundStyle(Color.asterAccent)
                     }
                     EditorSection(title: "Privacy", subtitle: "Bar does not record clicks, keystrokes, or app usage.") {
                         Label("No Accessibility permission required", systemImage: "checkmark.shield.fill").foregroundStyle(.green)
@@ -1783,7 +1052,7 @@ private struct SwitchModuleView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             Label("Private by construction", systemImage: "checkmark.shield.fill")
                                 .font(.headline)
-                                .foregroundStyle(Color.asterPurple)
+                                .foregroundStyle(Color.asterAccent)
                             SwitchAssuranceRow(text: "No telemetry or remote requests")
                             SwitchAssuranceRow(text: "No Accessibility permission")
                             SwitchAssuranceRow(text: "Sleep overrides end when Aster quits")
@@ -1830,9 +1099,9 @@ private struct SwitchGroup<Content: View>: View {
             HStack(spacing: 10) {
                 Image(systemName: symbol)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.asterPurple)
+                    .foregroundStyle(Color.asterAccent)
                     .frame(width: 30, height: 30)
-                    .background(Color.asterPurple.opacity(0.14), in: RoundedRectangle(cornerRadius: 9))
+                    .background(Color.asterAccent.opacity(0.14), in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.headline)
                     Text(subtitle).font(.caption).foregroundStyle(.secondary)
@@ -1860,7 +1129,7 @@ private struct MacSwitchRow: View {
         HStack(spacing: 11) {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isOn ? Color.asterPurple : .secondary)
+                .foregroundStyle(isOn ? Color.asterAccent : .secondary)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -1875,7 +1144,7 @@ private struct MacSwitchRow: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.small)
-                .tint(Color.asterPurple)
+                .tint(Color.asterAccent)
         }
         .padding(.vertical, 10)
         .overlay(alignment: .bottom) {
@@ -1907,7 +1176,7 @@ private struct AskModuleView: View {
                     HStack(alignment: .top, spacing: 18) {
                         VStack(alignment: .leading, spacing: 12) {
                             Label("AI, without the ambush", systemImage: "wand.and.stars")
-                                .font(.title2.weight(.bold)).foregroundStyle(Color.asterPurple)
+                                .font(.title2.weight(.bold)).foregroundStyle(Color.asterAccent)
                             Text("Ask is optional. Local models stay offline. Cloud providers only receive the text you deliberately send, using a key stored in Keychain.")
                                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
@@ -1936,7 +1205,7 @@ private struct AskModuleView: View {
     }
 }
 
-private struct EditorSection<Content: View>: View {
+struct EditorSection<Content: View>: View {
     let title: String
     let subtitle: String
     @ViewBuilder let content: () -> Content
@@ -1955,69 +1224,7 @@ private struct EditorSection<Content: View>: View {
     }
 }
 
-struct SettingsView: View {
-    @Environment(WallpaperController.self) private var controller
-    @Environment(ClipboardManager.self) private var clipboard
-    @Environment(UpdateManager.self) private var updates
-    @State private var showsAsterInDock = AsterAppPresence.showsInDock()
-
-    var body: some View {
-        @Bindable var clipboard = clipboard
-        @Bindable var updates = updates
-        Form {
-            Section("General") {
-                Toggle("Launch Aster at login", isOn: Binding(
-                    get: { controller.launchAtLogin },
-                    set: { controller.setLaunchAtLogin($0) }
-                ))
-                Text(controller.launchAtLoginStatusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("Show Aster in Dock", isOn: Binding(
-                    get: { showsAsterInDock },
-                    set: { newValue in
-                        showsAsterInDock = newValue
-                        AsterAppPresence.setShowsInDock(newValue)
-                    }
-                ))
-                Text("When hidden, Aster keeps running in the background and global shortcuts, Shelf, Bar, and other enabled modules continue working.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Section("Privacy") {
-                Toggle("Monitor clipboard", isOn: $clipboard.isMonitoring)
-                Button("Delete clipboard history", role: .destructive) { clipboard.clearHistory() }
-            }
-            Section("Updates") {
-                LabeledContent("Version", value: "\(updates.currentVersion) (\(updates.currentBuild))")
-                Toggle("Check for updates automatically", isOn: $updates.automaticallyChecksForUpdates)
-                HStack {
-                    Button(updates.updateButtonTitle) {
-                        if updates.state == .updateAvailable {
-                            updates.downloadAvailableUpdate()
-                        } else if updates.state == .downloaded {
-                            updates.openDownloadedUpdate()
-                        } else {
-                            updates.checkForUpdates()
-                        }
-                    }
-                    .disabled(updates.isBusy)
-                    Button("What’s New") { updates.showWhatsNew() }
-                        .disabled(updates.whatsNew == nil)
-                }
-                Text(updates.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Text("Aster has no account, analytics, telemetry, or advertising. Motion wallpapers require Aster to remain open.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-        .padding(24)
-        .frame(width: 470)
-    }
-}
-
-private struct AsterButtonStyle: ButtonStyle {
+struct AsterButtonStyle: ButtonStyle {
     let prominent: Bool
 
     func makeBody(configuration: Configuration) -> some View {
@@ -2029,7 +1236,7 @@ private struct AsterButtonStyle: ButtonStyle {
             .asterGlass(
                 cornerRadius: 12,
                 interactive: true,
-                tint: prominent ? Color.asterPurple.opacity(0.42) : nil
+                tint: prominent ? Color.asterAccent.opacity(0.42) : nil
             )
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.82 : 1)
@@ -2037,7 +1244,7 @@ private struct AsterButtonStyle: ButtonStyle {
     }
 }
 
-private extension View {
+extension View {
     @ViewBuilder
     func asterGlass(
         cornerRadius: CGFloat,

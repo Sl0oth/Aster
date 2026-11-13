@@ -121,6 +121,7 @@ enum AsterShortcutAction: String, CaseIterable, Identifiable, Codable, Sendable 
     case openKeys
     case importCanvas
     case showClipsGlobally
+    case toggleBar
 
     var id: String { rawValue }
 
@@ -135,6 +136,7 @@ enum AsterShortcutAction: String, CaseIterable, Identifiable, Codable, Sendable 
         case .openKeys: "Open Keys"
         case .importCanvas: "Import into Canvas"
         case .showClipsGlobally: "Open Clips globally"
+        case .toggleBar: "Show or hide Bar icons"
         }
     }
 
@@ -149,6 +151,7 @@ enum AsterShortcutAction: String, CaseIterable, Identifiable, Codable, Sendable 
         case .openKeys: "Open this shortcut cheat sheet."
         case .importCanvas: "Choose images or videos for Canvas."
         case .showClipsGlobally: "Show the Clips panel from any app."
+        case .toggleBar: "Collapse or reveal the menu bar icons behind Aster, from any app."
         }
     }
 
@@ -160,10 +163,12 @@ enum AsterShortcutAction: String, CaseIterable, Identifiable, Codable, Sendable 
             "Canvas"
         case .showClipsGlobally:
             "Clips"
+        case .toggleBar:
+            "Bar"
         }
     }
 
-    var isGlobal: Bool { self == .showClipsGlobally }
+    var isGlobal: Bool { self == .showClipsGlobally || self == .toggleBar }
 
     var defaultBinding: ShortcutBinding {
         switch self {
@@ -176,6 +181,7 @@ enum AsterShortcutAction: String, CaseIterable, Identifiable, Codable, Sendable 
         case .openKeys: ShortcutBinding("7", keyCode: 26, modifiers: .command)
         case .importCanvas: ShortcutBinding("o", keyCode: 31, modifiers: .command)
         case .showClipsGlobally: ShortcutBinding("v", keyCode: 9, modifiers: [.shift, .command])
+        case .toggleBar: ShortcutBinding("b", keyCode: 11, modifiers: [.control, .option, .command])
         }
     }
 }

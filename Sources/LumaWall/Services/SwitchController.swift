@@ -172,7 +172,6 @@ final class SwitchController {
 
     func setDarkMode(_ enabled: Bool) {
         guard isEnabled, !isApplying else { return }
-        isApplying = true
         let source = """
         tell application "System Events"
             tell appearance preferences
@@ -180,40 +179,56 @@ final class SwitchController {
             end tell
         end tell
         """
-        var error: NSDictionary?
-        NSAppleScript(source: source)?.executeAndReturnError(&error)
-        if error == nil {
-            usesDarkMode = enabled
-            statusMessage = enabled ? "Dark appearance enabled" : "Light appearance enabled"
-        } else {
-            statusMessage = "macOS did not allow the appearance change"
+        let previous = usesDarkMode
+        usesDarkMode = enabled
+        applyAppleScript(
+            source,
+            success: enabled ? "Dark appearance enabled" : "Light appearance enabled",
+            failure: "macOS did not allow the appearance change"
+        ) { [weak self] in
+            self?.usesDarkMode = previous
         }
-        isApplying = false
     }
 
     func setSystemAudioMuted(_ muted: Bool) {
-        guard isEnabled else { return }
+        guard isEnabled, !isApplying else { return }
+        let previous = mutesSystemAudio
+        mutesSystemAudio = muted
         applyAppleScript(
             "set volume output muted \(muted ? "true" : "false")",
-            success: muted ? "System audio muted" : "System audio restored"
+            success: muted ? "System audio muted" : "System audio restored",
+            failure: "macOS did not allow that audio change"
         ) { [weak self] in
-            self?.mutesSystemAudio = muted
+            self?.mutesSystemAudio = previous
         }
     }
 
     func setMicrophoneMuted(_ muted: Bool) {
-        guard isEnabled else { return }
-        let currentVolume = Self.readAppleScriptInteger("input volume of (get volume settings)") ?? 50
-        if muted, currentVolume > 0 {
-            UserDefaults.standard.set(currentVolume, forKey: previousInputVolumeKey)
-        }
-        let savedVolume = UserDefaults.standard.integer(forKey: previousInputVolumeKey)
-        let restoredVolume = savedVolume > 0 ? savedVolume : 50
-        applyAppleScript(
-            "set volume input volume \(muted ? 0 : restoredVolume)",
-            success: muted ? "Microphone input muted" : "Microphone input restored"
-        ) { [weak self] in
-            self?.mutesMicrophone = muted
+        guard isEnabled, !isApplying else { return }
+        let previous = mutesMicrophone
+        mutesMicrophone = muted
+        isApplying = true
+        let volumeKey = previousInputVolumeKey
+        Task { @MainActor [weak self] in
+            let currentVolume = await AppleScriptRunner.integer(
+                "input volume of (get volume settings)"
+            ) ?? 50
+            if muted, currentVolume > 0 {
+                UserDefaults.standard.set(currentVolume, forKey: volumeKey)
+            }
+            let savedVolume = UserDefaults.standard.integer(forKey: volumeKey)
+            let restoredVolume = savedVolume > 0 ? savedVolume : 50
+            let succeeded = await AppleScriptRunner.succeeds(
+                "set volume input volume \(muted ? 0 : restoredVolume)"
+            )
+            guard let self else { return }
+            if succeeded {
+                self.statusMessage = muted ? "Microphone input muted" : "Microphone input restored"
+            } else {
+                self.mutesMicrophone = previous
+                self.statusMessage = "macOS did not allow that audio change"
+            }
+            self.isApplying = false
         }
     }
 
@@ -314,8 +329,7 @@ final class SwitchController {
             key: "autohide",
             fallback: false
         )
-        mutesSystemAudio = Self.readAppleScriptBoolean("output muted of (get volume settings)") ?? false
-        mutesMicrophone = (Self.readAppleScriptInteger("input volume of (get volume settings)") ?? 50) == 0
+        refreshAudioState()
         automaticallyHidesMenuBar = Self.readMenuBarAutoHide()
         showsFinderPathBar = Self.readBooleanDefault(
             domain: "com.apple.finder",
@@ -337,6 +351,17 @@ final class SwitchController {
             key: "show-thumbnail",
             fallback: true
         )
+    }
+
+    private func refreshAudioState() {
+        Task { @MainActor [weak self] in
+            let outputMuted = await AppleScriptRunner.boolean("output muted of (get volume settings)")
+            let inputVolume = await AppleScriptRunner.integer("input volume of (get volume settings)")
+            // A change the user just made wins over this older reading.
+            guard let self, self.isEnabled, !self.isApplying else { return }
+            self.mutesSystemAudio = outputMuted ?? false
+            self.mutesMicrophone = (inputVolume ?? 50) == 0
+        }
     }
 
     private func updateSleepActivities() {
@@ -390,23 +415,26 @@ final class SwitchController {
         isApplying = false
     }
 
+    /// Runs a script for a change that is already shown in the interface, and
+    /// calls `revert` if macOS refuses it.
     private func applyAppleScript(
         _ source: String,
         success: String,
-        update: () -> Void
+        failure: String,
+        revert: @escaping @MainActor () -> Void
     ) {
-        guard !isApplying else { return }
         isApplying = true
-        var error: NSDictionary?
-        NSAppleScript(source: source)?.executeAndReturnError(&error)
-        if error == nil {
-            update()
-            statusMessage = success
-        } else {
-            statusMessage = "macOS did not allow that audio change"
-            refreshSystemState()
+        Task { @MainActor [weak self] in
+            let succeeded = await AppleScriptRunner.succeeds(source)
+            guard let self else { return }
+            if succeeded {
+                self.statusMessage = success
+            } else {
+                revert()
+                self.statusMessage = failure
+            }
+            self.isApplying = false
         }
-        isApplying = false
     }
 
     private static func readBooleanDefault(domain: String, key: String, fallback: Bool) -> Bool {
@@ -429,25 +457,19 @@ final class SwitchController {
         )
     }
 
+    /// Reads another app's preference in-process. Launching `defaults read` for
+    /// each of a dozen settings made the Switch page stall every time it opened.
     private static func readDefault(domain: String, key: String) -> String? {
-        let result = run("/usr/bin/defaults", arguments: ["read", domain, key])
-        guard result.status == 0 else { return nil }
-        let value = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
-    }
-
-    private static func readAppleScriptBoolean(_ source: String) -> Bool? {
-        var error: NSDictionary?
-        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
-        guard error == nil, let result else { return nil }
-        return result.booleanValue
-    }
-
-    private static func readAppleScriptInteger(_ source: String) -> Int? {
-        var error: NSDictionary?
-        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
-        guard error == nil, let result else { return nil }
-        return Int(result.int32Value)
+        let applicationID = domain == "NSGlobalDomain"
+            ? kCFPreferencesAnyApplication
+            : domain as CFString
+        CFPreferencesAppSynchronize(applicationID)
+        guard let value = CFPreferencesCopyAppValue(key as CFString, applicationID) else {
+            return nil
+        }
+        if let string = value as? String { return string.isEmpty ? nil : string }
+        if let number = value as? NSNumber { return number.stringValue }
+        return nil
     }
 
     private static func run(_ executable: String, arguments: [String]) -> (status: Int32, output: String) {

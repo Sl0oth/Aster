@@ -18,8 +18,8 @@ final class ReleaseTests: XCTestCase {
 
     func testBundledReleaseNotesAreComplete() throws {
         let notes = try XCTUnwrap(AsterBundledReleaseNotes.load())
-        XCTAssertEqual(notes.version, "1.0.0-beta.3")
-        XCTAssertEqual(notes.build, 3)
+        XCTAssertEqual(notes.version, "1.0.0-beta.4")
+        XCTAssertEqual(notes.build, 4)
         XCTAssertFalse(notes.headline.isEmpty)
         XCTAssertFalse(notes.summary.isEmpty)
         XCTAssertFalse(notes.features.isEmpty)

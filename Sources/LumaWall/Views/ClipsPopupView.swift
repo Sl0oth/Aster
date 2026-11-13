@@ -3,9 +3,14 @@ import SwiftUI
 
 struct ClipsPopupView: View {
     @Environment(ClipboardManager.self) private var clipboard
+    /// Supplies the current global shortcut so the hint matches what the user set.
+    var shortcuts: ShortcutStore?
+    /// Called after a clip has been copied to the pasteboard.
+    let onCopied: @MainActor () -> Void
     let onDismiss: @MainActor () -> Void
 
     @State private var activeBoardID: ClipboardBoard.ID?
+    @State private var isConfirmingClear = false
     @State private var selectedEntryID: ClipboardEntry.ID?
     @State private var isAddingBoard = false
     @State private var newBoardName = ""
@@ -35,7 +40,7 @@ struct ClipsPopupView: View {
             LinearGradient(
                 colors: [
                     Color.white.opacity(0.055),
-                    Color.asterDeepPurple.opacity(0.08),
+                    Color.asterAccentDeep.opacity(0.08),
                     Color.black.opacity(0.16)
                 ],
                 startPoint: .topLeading,
@@ -105,6 +110,17 @@ struct ClipsPopupView: View {
                 boardToRename = nil
             }
         }
+        .alert("Clear clipboard history?", isPresented: $isConfirmingClear) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear History", role: .destructive) { clipboard.clearHistory() }
+        } message: {
+            Text(ClipsCopy.clearHistoryMessage(boardClipCount: clipboard.boardClipCount))
+        }
+    }
+
+    private var shortcutHint: String? {
+        guard let shortcuts, !shortcuts.isDisabled(.showClipsGlobally) else { return nil }
+        return shortcuts.binding(for: .showClipsGlobally).display
     }
 
     private var searchBar: some View {
@@ -131,12 +147,14 @@ struct ClipsPopupView: View {
                 .help("Clear search")
             }
 
-            Text("⌘⇧V")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 8)
-                .frame(height: 23)
-                .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
+            if let shortcutHint {
+                Text(shortcutHint)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 23)
+                    .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
+            }
         }
         .padding(.horizontal, 16)
         .frame(height: 54)
@@ -244,20 +262,25 @@ struct ClipsPopupView: View {
 
             HStack(spacing: 7) {
                 Circle()
-                    .fill(clipboard.isMonitoring ? Color.green : Color.secondary)
+                    .fill(clipboard.isCapturing ? Color.green : Color.secondary)
                     .frame(width: 6, height: 6)
-                    .shadow(color: clipboard.isMonitoring ? .green.opacity(0.6) : .clear, radius: 4)
-                Text(clipboard.isMonitoring ? "Capturing locally" : "Capture paused")
+                    .shadow(color: clipboard.isCapturing ? .green.opacity(0.6) : .clear, radius: 4)
+                Text(clipboard.isCapturing ? "Capturing locally" : "Capture paused")
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 Menu {
-                    Button(clipboard.isMonitoring ? "Pause Capture" : "Resume Capture") {
-                        clipboard.isMonitoring.toggle()
+                    Button(clipboard.isCapturing ? "Pause Capture" : "Resume Capture") {
+                        if clipboard.isCapturing {
+                            clipboard.isCapturePaused = true
+                        } else {
+                            clipboard.isMonitoring = true
+                            clipboard.isCapturePaused = false
+                        }
                     }
                     Divider()
-                    Button("Clear History", role: .destructive) {
-                        clipboard.clearHistory()
+                    Button("Clear History…", role: .destructive) {
+                        isConfirmingClear = true
                     }
                     .disabled(clipboard.entries.isEmpty)
                 } label: {
@@ -299,8 +322,8 @@ struct ClipsPopupView: View {
             .frame(height: 32)
             .background(
                 isDropTarget
-                    ? Color.asterPurple.opacity(0.52)
-                    : (isActive ? Color.asterPurple.opacity(0.32) : .clear),
+                    ? Color.asterAccent.opacity(0.52)
+                    : (isActive ? Color.asterAccent.opacity(0.32) : .clear),
                 in: RoundedRectangle(cornerRadius: 9, style: .continuous)
             )
             .overlay {
@@ -326,7 +349,7 @@ struct ClipsPopupView: View {
                     .frame(height: 20)
                     .background(.white.opacity(0.045), in: Capsule())
                 Spacer()
-                Text("↑↓ select   ↩ copy")
+                Text(clipboard.pastesAfterCopy ? "↑↓ select   ↩ paste" : "↑↓ select   ↩ copy")
                     .font(.system(size: 10, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
             }
@@ -335,7 +358,7 @@ struct ClipsPopupView: View {
 
             Divider().overlay(.white.opacity(0.045))
 
-            if !clipboard.isMonitoring && clipboard.entries.isEmpty {
+            if !clipboard.isCapturing && clipboard.entries.isEmpty {
                 emptyState(
                     symbol: "pause.circle",
                     title: "Clipboard capture is paused",
@@ -343,6 +366,7 @@ struct ClipsPopupView: View {
                     buttonTitle: "Resume Capture"
                 ) {
                     clipboard.isMonitoring = true
+                    clipboard.isCapturePaused = false
                 }
             } else if entries.isEmpty {
                 emptyState(
@@ -364,7 +388,7 @@ struct ClipsPopupView: View {
                                         isSelected: selectedEntryID == entry.id
                                     ) {
                                         clipboard.copy(entry)
-                                        onDismiss()
+                                        onCopied()
                                     }
                                     .id(entry.id)
                                     .background {
@@ -410,7 +434,7 @@ struct ClipsPopupView: View {
         VStack(spacing: 9) {
             Image(systemName: symbol)
                 .font(.system(size: 24, weight: .light))
-                .foregroundStyle(Color.asterPurple.opacity(0.9))
+                .foregroundStyle(Color.asterAccent.opacity(0.9))
             Text(title)
                 .font(.system(size: 14, weight: .semibold))
             Text(detail)
@@ -421,7 +445,7 @@ struct ClipsPopupView: View {
             if let buttonTitle, let action {
                 Button(buttonTitle, action: action)
                     .buttonStyle(.borderedProminent)
-                    .tint(Color.asterPurple)
+                    .tint(Color.asterAccent)
                     .controlSize(.small)
                     .padding(.top, 3)
             }
@@ -516,7 +540,7 @@ struct ClipsPopupView: View {
         guard let selectedEntryID,
               let entry = entries.first(where: { $0.id == selectedEntryID }) ?? entries.first else { return }
         clipboard.copy(entry)
-        onDismiss()
+        onCopied()
     }
 }
 
@@ -541,7 +565,7 @@ private struct ClipsRecallRow: View {
     private var dragPreview: some View {
         HStack(spacing: 9) {
             Image(systemName: entry.kind.symbol)
-                .foregroundStyle(Color.asterPurple)
+                .foregroundStyle(Color.asterAccent)
             Text(primaryText)
                 .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
@@ -604,17 +628,15 @@ private struct ClipsRecallRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         }
         .buttonStyle(.plain)
-        .help("Copy and close")
+        .help(clipboard.pastesAfterCopy ? "Paste and close" : "Copy and close")
     }
 
     @ViewBuilder
     private var preview: some View {
         switch entry.kind {
         case .image:
-            if let url = clipboard.imageURL(for: entry), let image = NSImage(contentsOf: url) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
+            if let url = clipboard.imageURL(for: entry) {
+                ClipImageThumbnail(url: url, maxPixel: 160, fills: true)
             } else {
                 previewSymbol("photo")
             }
@@ -635,7 +657,7 @@ private struct ClipsRecallRow: View {
     private func previewSymbol(_ symbol: String) -> some View {
         Image(systemName: symbol)
             .font(.system(size: 17, weight: .medium))
-            .foregroundStyle(entry.kind == .link ? Color.blue : Color.asterPurple)
+            .foregroundStyle(entry.kind == .link ? Color.blue : Color.asterAccent)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 

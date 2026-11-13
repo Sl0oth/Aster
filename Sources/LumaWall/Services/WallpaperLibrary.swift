@@ -31,11 +31,14 @@ final class WallpaperLibrary {
     }
     var searchText = ""
     var mediaFilter: MediaFilter = .all
-    var sortOrder: SortOrder = .newest
+    var sortOrder: SortOrder = .newest {
+        didSet { UserDefaults.standard.set(sortOrder.rawValue, forKey: sortOrderKey) }
+    }
 
     private let fileManager = FileManager.default
     private let metadataURL: URL
     private let selectionKey = "Aster.Canvas.selectedWallpaper"
+    private let sortOrderKey = "Aster.Canvas.sortOrder"
     let libraryURL: URL
 
     var filteredItems: [WallpaperItem] {
@@ -73,6 +76,10 @@ final class WallpaperLibrary {
         libraryURL = support.appendingPathComponent("Library", isDirectory: true)
         metadataURL = support.appendingPathComponent("wallpapers.json")
         try? fileManager.createDirectory(at: libraryURL, withIntermediateDirectories: true)
+        if let storedSort = UserDefaults.standard.string(forKey: sortOrderKey),
+           let sort = SortOrder(rawValue: storedSort) {
+            sortOrder = sort
+        }
         load()
     }
 
@@ -80,9 +87,12 @@ final class WallpaperLibrary {
         libraryURL.appendingPathComponent(item.filename)
     }
 
+    /// Imports every supported file. A file that cannot be copied does not stop the
+    /// rest; the first failure is thrown after the successful imports are saved.
     @discardableResult
     func importFiles(_ urls: [URL]) throws -> [WallpaperItem] {
         var imported: [WallpaperItem] = []
+        var firstError: Error?
         for sourceURL in urls {
             guard let kind = WallpaperItem.kind(for: sourceURL) else { continue }
             let accessed = sourceURL.startAccessingSecurityScopedResource()
@@ -90,7 +100,12 @@ final class WallpaperLibrary {
 
             let filename = "\(UUID().uuidString).\(sourceURL.pathExtension.lowercased())"
             let destination = libraryURL.appendingPathComponent(filename)
-            try fileManager.copyItem(at: sourceURL, to: destination)
+            do {
+                try fileManager.copyItem(at: sourceURL, to: destination)
+            } catch {
+                firstError = firstError ?? error
+                continue
+            }
             let item = WallpaperItem(
                 name: sourceURL.deletingPathExtension().lastPathComponent,
                 filename: filename,
@@ -100,8 +115,17 @@ final class WallpaperLibrary {
             imported.append(item)
         }
         if let first = imported.first { selectedID = first.id }
-        save()
+        if !imported.isEmpty { save() }
+        if let firstError { throw firstError }
         return imported
+    }
+
+    func rename(_ item: WallpaperItem, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != item.name,
+              let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        items[index].name = trimmed
+        save()
     }
 
     func remove(_ item: WallpaperItem) {

@@ -26,6 +26,7 @@ enum AsterAppPresence {
     static func setShowsInDock(_ showsInDock: Bool, defaults: UserDefaults = .standard) {
         defaults.set(showsInDock, forKey: showsInDockKey)
         apply(showsInDock)
+        NotificationCenter.default.post(name: .asterPresenceChanged, object: nil)
     }
 
     @MainActor
@@ -217,11 +218,11 @@ struct AsterApp: App {
                     clipsPanel.activate(clipboard: clipboard, shortcuts: shortcuts)
                     shortcutRemapper.activate(shortcuts: shortcuts)
                     appHotkeys.activate(shortcuts: shortcuts)
-                    bar.activate()
+                    bar.activate(shortcuts: shortcuts)
                     updates.start()
                 }
-                .onChange(of: clipboard.isMonitoring) { _, isMonitoring in
-                    clipsPanel.setEnabled(isMonitoring)
+                .onChange(of: clipboard.isPanelAvailable) { _, isAvailable in
+                    clipsPanel.setEnabled(isAvailable)
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -243,6 +244,9 @@ struct AsterApp: App {
             SettingsView()
                 .environment(controller)
                 .environment(clipboard)
+                .environment(shelf)
+                .environment(bar)
+                .environment(switches)
                 .environment(updates)
         }
     }
@@ -252,6 +256,7 @@ struct AsterApp: App {
 final class AsterAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AsterAppPresence.applySavedPreference()
+        AsterMenuBarFallback.shared.start()
         DispatchQueue.main.async {
             AsterWindowRouter.shared.show()
         }
@@ -269,6 +274,64 @@ final class AsterAppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+}
+
+/// Keeps Aster reachable when it has no Dock icon and Bar is off: without
+/// either, there would be no way to open the window again.
+@MainActor
+final class AsterMenuBarFallback: NSObject {
+    static let shared = AsterMenuBarFallback()
+
+    private var item: NSStatusItem?
+    private var observer: NSObjectProtocol?
+
+    nonisolated static func isNeeded(showsInDock: Bool, barIsEnabled: Bool) -> Bool {
+        !showsInDock && !barIsEnabled
+    }
+
+    func start() {
+        if observer == nil {
+            observer = NotificationCenter.default.addObserver(
+                forName: .asterPresenceChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.sync() }
+            }
+        }
+        sync()
+    }
+
+    private func sync() {
+        let needed = Self.isNeeded(
+            showsInDock: AsterAppPresence.showsInDock(),
+            barIsEnabled: UserDefaults.standard.bool(forKey: "Aster.Bar.enabled")
+        )
+        if needed, item == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            item.button?.image = BarController.asterStatusImage()
+            item.button?.toolTip = "Aster"
+            let menu = NSMenu()
+            let open = NSMenuItem(title: "Open Aster", action: #selector(openAster), keyEquivalent: "")
+            open.target = self
+            menu.addItem(open)
+            menu.addItem(.separator())
+            menu.addItem(NSMenuItem(
+                title: "Quit Aster",
+                action: #selector(NSApplication.terminate(_:)),
+                keyEquivalent: "q"
+            ))
+            item.menu = menu
+            self.item = item
+        } else if !needed, let item {
+            NSStatusBar.system.removeStatusItem(item)
+            self.item = nil
+        }
+    }
+
+    @objc private func openAster() {
+        AsterWindowRouter.shared.show()
+    }
 }
 
 extension Notification.Name {

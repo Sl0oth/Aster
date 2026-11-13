@@ -99,9 +99,9 @@ struct KeysModuleView: View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: sectionIcon)
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Color.asterPurple)
+                .foregroundStyle(Color.asterAccent)
                 .frame(width: 38, height: 38)
-                .background(Color.asterPurple.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
+                .background(Color.asterAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(sectionTitle)
@@ -121,10 +121,10 @@ struct KeysModuleView: View {
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(Color.asterPurple)
+                    .foregroundStyle(Color.asterAccent)
                     .padding(.horizontal, 11)
                     .frame(height: 32)
-                    .background(Color.asterPurple.opacity(0.11), in: RoundedRectangle(cornerRadius: 9))
+                    .background(Color.asterAccent.opacity(0.11), in: RoundedRectangle(cornerRadius: 9))
                 } else if shortcutRemapper.isActive {
                     Label("Live", systemImage: "checkmark.circle.fill")
                         .font(.system(size: 11.5, weight: .semibold))
@@ -140,7 +140,7 @@ struct KeysModuleView: View {
         .background(.thinMaterial.opacity(0.38), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .stroke(Color.asterPurple.opacity(0.16), lineWidth: 0.7)
+                .stroke(Color.asterAccent.opacity(0.16), lineWidth: 0.7)
         }
     }
 
@@ -280,7 +280,7 @@ struct KeysModuleView: View {
             VStack(spacing: 13) {
                 Image(systemName: "app.badge")
                     .font(.system(size: 30, weight: .medium))
-                    .foregroundStyle(Color.asterPurple)
+                    .foregroundStyle(Color.asterAccent)
                 Text("No app hotkeys yet")
                     .font(.system(size: 15, weight: .semibold))
                 Text("Add any application, then press the hotkey you want to use from anywhere on your Mac.")
@@ -442,10 +442,10 @@ private struct AppHotkeyRow: View {
                     Text("GLOBAL")
                         .font(.system(size: 8, weight: .bold, design: .rounded))
                         .tracking(0.7)
-                        .foregroundStyle(Color.asterPurple)
+                        .foregroundStyle(Color.asterAccent)
                         .padding(.horizontal, 6)
                         .frame(height: 18)
-                        .background(Color.asterPurple.opacity(0.11), in: Capsule())
+                        .background(Color.asterAccent.opacity(0.11), in: Capsule())
                     if hotkey.isDisabled {
                         Text("DISABLED")
                             .font(.system(size: 8, weight: .bold, design: .rounded))
@@ -469,13 +469,13 @@ private struct AppHotkeyRow: View {
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
-                    .foregroundStyle(isRecording ? Color.asterPurple : .primary)
+                    .foregroundStyle(isRecording ? Color.asterAccent : .primary)
                     .padding(.horizontal, 10)
                     .frame(minWidth: 90, minHeight: 30)
                     .background(.white.opacity(isRecording ? 0.09 : 0.06), in: RoundedRectangle(cornerRadius: 8))
                     .overlay {
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(isRecording ? Color.asterPurple.opacity(0.7) : .white.opacity(0.08), lineWidth: 0.8)
+                            .stroke(isRecording ? Color.asterAccent.opacity(0.7) : .white.opacity(0.08), lineWidth: 0.8)
                     }
             }
             .buttonStyle(.plain)
@@ -498,7 +498,7 @@ private struct AppHotkeyRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle((isCustomized || hotkey.isDisabled) ? Color.asterPurple : Color.secondary.opacity(0.4))
+            .foregroundStyle((isCustomized || hotkey.isDisabled) ? Color.asterAccent : Color.secondary.opacity(0.4))
             .disabled((!isCustomized && !hotkey.isDisabled) || hotkey.defaultBinding == nil)
             .help("Restore the first hotkey assigned to this app")
 
@@ -533,7 +533,7 @@ private struct KeysActionButtonStyle: ButtonStyle {
             .frame(minWidth: 82, alignment: .center)
             .frame(height: 32, alignment: .center)
             .contentShape(RoundedRectangle(cornerRadius: 9))
-            .background(Color.asterPurple.opacity(0.42), in: RoundedRectangle(cornerRadius: 9))
+            .background(Color.asterAccent.opacity(0.42), in: RoundedRectangle(cornerRadius: 9))
             .overlay {
                 RoundedRectangle(cornerRadius: 9)
                     .stroke(.white.opacity(0.09), lineWidth: 0.7)
@@ -588,10 +588,10 @@ private struct ShortcutRow: View {
                         Text("GLOBAL")
                             .font(.system(size: 8, weight: .bold, design: .rounded))
                             .tracking(0.7)
-                            .foregroundStyle(Color.asterPurple)
+                            .foregroundStyle(Color.asterAccent)
                             .padding(.horizontal, 6)
                             .frame(height: 18)
-                            .background(Color.asterPurple.opacity(0.11), in: Capsule())
+                            .background(Color.asterAccent.opacity(0.11), in: Capsule())
                     }
                     if isDisabled {
                         Text("DISABLED")
@@ -616,13 +616,13 @@ private struct ShortcutRow: View {
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
-                    .foregroundStyle(isRecording ? Color.asterPurple : .primary)
+                    .foregroundStyle(isRecording ? Color.asterAccent : .primary)
                     .padding(.horizontal, 10)
                     .frame(minWidth: 78, minHeight: 30)
                     .background(.white.opacity(isRecording ? 0.09 : 0.06), in: RoundedRectangle(cornerRadius: 8))
                     .overlay {
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(isRecording ? Color.asterPurple.opacity(0.7) : .white.opacity(0.08), lineWidth: 0.8)
+                            .stroke(isRecording ? Color.asterAccent.opacity(0.7) : .white.opacity(0.08), lineWidth: 0.8)
                     }
             }
             .buttonStyle(.plain)
@@ -652,7 +652,7 @@ private struct ShortcutRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle((isCustomized || isDisabled) ? Color.asterPurple : Color.secondary.opacity(0.45))
+            .foregroundStyle((isCustomized || isDisabled) ? Color.asterAccent : Color.secondary.opacity(0.45))
             .disabled(!isCustomized && !isDisabled)
             .help("Restore this shortcut to its default")
             .accessibilityLabel("Restore \(title) shortcut")

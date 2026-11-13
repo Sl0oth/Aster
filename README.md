@@ -40,10 +40,10 @@ Group real third-party menu-bar icons behind Aster, then hide or reveal them wit
 
 ## Modules
 
-- **Canvas** — Import, preview, organize, and independently assign still images, GIFs, or looping videos to the Desktop, Lock Screen, and Screen Saver. Includes a full-bleed editor, filtering, sorting, drag-and-drop import, destination badges, timed shuffle, motion auto-resume, and per-display Smart Pause when app windows cover the desktop.
-- **Clips** — Keep an opt-in, local clipboard history with search, persistent boards, drag-and-drop, source-app labels, and password-manager exclusions.
-- **Shelf** — Open a configurable, hover-activated notch panel for the utilities you want close at hand.
-- **Bar** — Collapse and reveal native third-party menu-bar items while preserving their arrangement across launches.
+- **Canvas** — Import, preview, organize, and independently assign still images, GIFs, or looping videos to the Desktop, Lock Screen, and Screen Saver, with a different wallpaper on each display if you like. Includes a full-bleed editor, filtering, sorting, drag-and-drop import, destination badges, timed shuffle in random or library order, motion speed and dimming, motion auto-resume, and per-display Smart Pause when app windows cover the desktop, the Mac is busy, or it is running on battery.
+- **Clips** — Keep an opt-in, local clipboard history with search, persistent boards, drag-and-drop, source-app labels, password-manager exclusions, your own ignored apps, a history limit, automatic expiry, and optional paste-on-select.
+- **Shelf** — Open a configurable, hover-activated notch panel for the utilities you want close at hand. Choose the widgets, their order, the display, the hover delay, and your own timer lengths.
+- **Bar** — Collapse and reveal native third-party menu-bar items while preserving their arrangement across launches, by click, global shortcut, or automatically after a delay.
 - **Switch** — Put common local Mac controls—sleep, Finder, Dock, appearance, audio, and screenshots—in one place.
 - **Keys** — Browse a Mac shortcut cheat sheet, change or disable supported shortcuts, and assign global hotkeys that open or focus any application.
 
@@ -98,7 +98,8 @@ macOS stores the dragged status-item positions, while Aster stores its own Bar s
 
 - Clipboard monitoring is off until you explicitly enable it.
 - Clipboard history, boards, and locally stored image previews stay in `~/Library/Application Support/Aster`.
-- Common password managers and Keychain are excluded from clipboard capture.
+- Common password managers and Keychain are excluded from clipboard capture, as is anything an app marks as concealed or transient. You can add your own ignored apps.
+- Pasting a chosen clip for you is off by default and needs Accessibility permission.
 - Drop Zone file references last only for the current Aster session.
 - Shortcuts and system health stay local.
 - Shelf reads the active macOS Now Playing session. Music, Spotify, and Reminders automation is used only when explicitly available.
@@ -117,11 +118,11 @@ The signed update feed and community installers are hosted by the public [Sl0oth
 
 ### Motion wallpapers
 
-macOS has no public API for arbitrary video wallpapers. Aster displays looping videos in click-through windows above the system wallpaper and below Finder's desktop icons. Aster must remain open while a motion wallpaper is active.
+macOS has no public API for arbitrary video wallpapers. Aster displays looping videos and animated GIFs in click-through windows above the system wallpaper and below Finder's desktop icons. Aster must remain open while a motion wallpaper is active.
 
 ### Screen Saver and Lock Screen
 
-Canvas can install its native `Aster.saver` module in `~/Library/Screen Savers`. Desktop, Lock Screen, and Screen Saver assignments are stored separately. Desktop and Screen Saver accept still or motion media. Screen Saver protection can cycle through every item in the live Canvas library without repeating one until the set has rotated, and optional pixel shifting moves overscanned content so bright details do not remain on the same display pixels. Both intervals are configurable and can be turned off. macOS allows only a still image on the secure Lock Screen, so Aster disables video and GIF selections for that destination and stores the chosen still in the system desktop layer.
+Canvas can install its native `Aster.saver` module in `~/Library/Screen Savers`. Desktop, Lock Screen, and Screen Saver assignments are stored separately. Desktop and Screen Saver accept still or motion media. Screen Saver protection can cycle through every item in the live Canvas library without repeating one until the set has rotated, and optional pixel shifting moves overscanned content so bright details do not remain on the same display pixels. Both intervals are configurable and can be turned off. macOS allows only a still image on the secure Lock Screen, so Aster disables video and GIF selections for that destination and stores the chosen still in the system desktop layer. If your Desktop uses a different still, Aster draws that one itself above the system layer, so it is shown only while Aster is open.
 
 ## License
 

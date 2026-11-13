@@ -275,7 +275,7 @@ private extension AsterModule {
     var introductionSteps: [String] {
         switch self {
         case .canvas:
-            ["Import an image, GIF, or video.", "Choose Desktop, Lock Screen, or Screen Saver.", "Preview the result, then apply it."]
+            ["Import an image, GIF, or video.", "Click a wallpaper to preview it.", "Set it as your Desktop, Lock Screen, or Screen Saver."]
         case .clips:
             ["Enable clipboard monitoring.", "Copy text, links, colors, or images normally.", "Open Clips to search, reuse, or pin an item."]
         case .shelf:

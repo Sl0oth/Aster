@@ -57,7 +57,7 @@ enum AsterModule: String, CaseIterable, Identifiable {
     }
 
     var accent: Color {
-        .asterPurple
+        .asterAccent
     }
 
     var isAvailable: Bool { self != .ask }

@@ -9,7 +9,7 @@ struct UpdateDetailsView: View {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "arrow.down.circle.fill")
                     .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(Color.asterPurple)
+                    .foregroundStyle(Color.asterAccent)
                     .frame(width: 48, height: 48)
                     .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 13))
 
@@ -101,7 +101,7 @@ struct WhatsNewView: View {
                 HStack(alignment: .top, spacing: 14) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(Color.asterPurple)
+                        .foregroundStyle(Color.asterAccent)
                         .frame(width: 48, height: 48)
                         .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 13))
                     VStack(alignment: .leading, spacing: 4) {
@@ -164,7 +164,7 @@ private struct ReleaseFeatureRow: View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: feature.symbol)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.asterPurple)
+                .foregroundStyle(Color.asterAccent)
                 .frame(width: 32, height: 32)
                 .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 3) {

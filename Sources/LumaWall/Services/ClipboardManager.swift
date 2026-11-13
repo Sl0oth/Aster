@@ -9,16 +9,79 @@ final class ClipboardManager {
         var boards: [ClipboardBoard]
     }
 
+    struct ExcludedApp: Codable, Hashable, Identifiable {
+        let bundleIdentifier: String
+        let name: String
+        var id: String { bundleIdentifier }
+    }
+
+    enum Retention: Int, CaseIterable, Identifiable {
+        case forever = 0
+        case oneDay = 1
+        case oneWeek = 7
+        case oneMonth = 30
+
+        var id: Int { rawValue }
+        var label: String {
+            switch self {
+            case .forever: "Forever"
+            case .oneDay: "1 day"
+            case .oneWeek: "7 days"
+            case .oneMonth: "30 days"
+            }
+        }
+    }
+
+    static let historyLimitChoices = [50, 100, 300, 500, 1_000]
+
     private(set) var entries: [ClipboardEntry] = []
     private(set) var boards: [ClipboardBoard] = []
     var searchText = ""
+    /// How many clips to keep, not counting clips saved to a board.
+    var historyLimit = 300 {
+        didSet {
+            guard historyLimit != oldValue else { return }
+            UserDefaults.standard.set(historyLimit, forKey: historyLimitKey)
+            if pruneHistory() { save() }
+        }
+    }
+    /// Clips older than this are removed unless they are saved to a board.
+    var retention: Retention = .forever {
+        didSet {
+            guard retention != oldValue else { return }
+            UserDefaults.standard.set(retention.rawValue, forKey: retentionKey)
+            if pruneHistory() { save() }
+        }
+    }
+    /// Apps whose copies are never recorded, in addition to the built-in password managers.
+    private(set) var excludedApps: [ExcludedApp] = []
+    /// Paste into the frontmost app right after choosing a clip in the Clips panel.
+    var pastesAfterCopy = false {
+        didSet {
+            guard pastesAfterCopy != oldValue else { return }
+            UserDefaults.standard.set(pastesAfterCopy, forKey: pastesAfterCopyKey)
+        }
+    }
+    /// The global Clips panel and its shortcut exist only while Clips is on.
+    var isPanelAvailable: Bool { isMonitoring }
     var isMonitoring = false {
         didSet {
             guard oldValue != isMonitoring else { return }
             UserDefaults.standard.set(isMonitoring, forKey: monitoringKey)
+            // Turning Clips on always starts capturing again.
+            if isMonitoring { isCapturePaused = false }
             configureTimer()
         }
     }
+    /// A temporary pause from the Clips panel. Clips stays on — the panel and
+    /// its shortcut keep working — but nothing new is recorded.
+    var isCapturePaused = false {
+        didSet {
+            guard isCapturePaused != oldValue else { return }
+            UserDefaults.standard.set(isCapturePaused, forKey: capturePausedKey)
+        }
+    }
+    var isCapturing: Bool { isMonitoring && !isCapturePaused }
 
     var filteredEntries: [ClipboardEntry] {
         filteredEntries(in: nil)
@@ -30,7 +93,11 @@ final class ClipboardManager {
     private let legacyDataURL: URL
     private let imagesURL: URL
     private let monitoringKey = "Aster.Clips.isMonitoring"
-    private let maxHistory = 300
+    private let capturePausedKey = "Aster.Clips.capturePaused"
+    private let historyLimitKey = "Aster.Clips.historyLimit"
+    private let retentionKey = "Aster.Clips.retentionDays"
+    private let excludedAppsKey = "Aster.Clips.excludedApps"
+    private let pastesAfterCopyKey = "Aster.Clips.pastesAfterCopy"
     private let maxImageDimension = 2_000
     private var lastChangeCount: Int
     private var timer: Timer?
@@ -45,6 +112,11 @@ final class ClipboardManager {
         "com.dashlane.Dashlane"
     ]
 
+    private let privatePasteboardTypes: Set<String> = [
+        "org.nspasteboard.ConcealedType",
+        "org.nspasteboard.TransientType"
+    ]
+
     init() {
         let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Aster", isDirectory: true)
@@ -55,8 +127,22 @@ final class ClipboardManager {
         lastChangeCount = pasteboard.changeCount
 
         try? fileManager.createDirectory(at: imagesURL, withIntermediateDirectories: true)
+        let defaults = UserDefaults.standard
+        let storedLimit = defaults.integer(forKey: historyLimitKey)
+        if Self.historyLimitChoices.contains(storedLimit) { historyLimit = storedLimit }
+        if let storedRetention = defaults.object(forKey: retentionKey) as? Int,
+           let retention = Retention(rawValue: storedRetention) {
+            self.retention = retention
+        }
+        if let data = defaults.data(forKey: excludedAppsKey),
+           let apps = try? JSONDecoder().decode([ExcludedApp].self, from: data) {
+            excludedApps = apps
+        }
+        pastesAfterCopy = defaults.bool(forKey: pastesAfterCopyKey)
         load()
+        if pruneHistory() { save() }
         isMonitoring = UserDefaults.standard.bool(forKey: monitoringKey)
+        isCapturePaused = isMonitoring && UserDefaults.standard.bool(forKey: capturePausedKey)
         configureTimer()
     }
 
@@ -101,11 +187,48 @@ final class ClipboardManager {
         save()
     }
 
-    func clearHistory() {
-        entries.forEach(deleteImage)
-        entries.removeAll()
-        for index in boards.indices { boards[index].itemIDs.removeAll() }
+    /// Clears the history. Clips saved to a board are kept unless
+    /// `includingBoardClips` is true.
+    func clearHistory(includingBoardClips: Bool = false) {
+        let kept = includingBoardClips ? [] : Set(boards.flatMap(\.itemIDs))
+        entries.filter { !kept.contains($0.id) }.forEach(deleteImage)
+        entries.removeAll { !kept.contains($0.id) }
+        if includingBoardClips {
+            for index in boards.indices { boards[index].itemIDs.removeAll() }
+        }
         save()
+    }
+
+    /// The number of clips `clearHistory()` would keep because they are on a board.
+    var boardClipCount: Int {
+        let saved = Set(boards.flatMap(\.itemIDs))
+        return entries.count { saved.contains($0.id) }
+    }
+
+    @discardableResult
+    func excludeApplication(at url: URL) -> Bool {
+        guard let bundle = Bundle(url: url),
+              let bundleIdentifier = bundle.bundleIdentifier,
+              !excludedApps.contains(where: { $0.bundleIdentifier == bundleIdentifier }) else {
+            return false
+        }
+        let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? url.deletingPathExtension().lastPathComponent
+        excludedApps.append(ExcludedApp(bundleIdentifier: bundleIdentifier, name: name))
+        excludedApps.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        saveExcludedApps()
+        return true
+    }
+
+    func removeExcludedApp(_ app: ExcludedApp) {
+        excludedApps.removeAll { $0.id == app.id }
+        saveExcludedApps()
+    }
+
+    private func saveExcludedApps() {
+        guard let data = try? JSONEncoder().encode(excludedApps) else { return }
+        UserDefaults.standard.set(data, forKey: excludedAppsKey)
     }
 
     @discardableResult
@@ -174,10 +297,21 @@ final class ClipboardManager {
     private func captureIfChanged() {
         guard pasteboard.changeCount != lastChangeCount else { return }
         lastChangeCount = pasteboard.changeCount
+        // Keep following the pasteboard while paused, so nothing copied during
+        // the pause is recorded when capture resumes.
+        guard !isCapturePaused else { return }
 
         let frontmostApp = NSWorkspace.shared.frontmostApplication
         if let bundleID = frontmostApp?.bundleIdentifier,
-           sensitiveBundleIDs.contains(bundleID) {
+           sensitiveBundleIDs.contains(bundleID)
+            || excludedApps.contains(where: { $0.bundleIdentifier == bundleID }) {
+            return
+        }
+
+        // Password managers and other apps mark secrets and throwaway copies with
+        // these nspasteboard.org types; never keep them in history.
+        let pasteboardTypes = Set((pasteboard.types ?? []).map(\.rawValue))
+        if !pasteboardTypes.isDisjoint(with: privatePasteboardTypes) {
             return
         }
 
@@ -259,20 +393,30 @@ final class ClipboardManager {
         return (data, width, height)
     }
 
-    private func pruneHistory() {
-        guard entries.count > maxHistory else { return }
+    /// Applies the history limit and retention period. Clips saved to a board
+    /// are always kept. Returns whether anything was removed.
+    @discardableResult
+    private func pruneHistory() -> Bool {
         let referenced = Set(boards.flatMap(\.itemIDs))
+        let cutoff = retention == .forever
+            ? nil
+            : Date().addingTimeInterval(-TimeInterval(retention.rawValue) * 86_400)
         var kept: [ClipboardEntry] = []
         var unreferencedCount = 0
         for entry in entries {
-            if referenced.contains(entry.id) || unreferencedCount < maxHistory {
+            if referenced.contains(entry.id) {
                 kept.append(entry)
-                if !referenced.contains(entry.id) { unreferencedCount += 1 }
+            } else if unreferencedCount < historyLimit,
+                      cutoff.map({ entry.createdAt >= $0 }) ?? true {
+                kept.append(entry)
+                unreferencedCount += 1
             } else {
                 deleteImage(for: entry)
             }
         }
+        guard kept.count != entries.count else { return false }
         entries = kept
+        return true
     }
 
     private func deleteImage(for entry: ClipboardEntry) {

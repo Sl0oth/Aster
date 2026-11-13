@@ -83,51 +83,45 @@ struct ShelfPanelView: View {
             .padding(.top, shelf.showsHeaderDate || shelf.showsHeaderTime ? 14 : 8)
             .padding(.horizontal, 16)
 
-            if shelf.showsNowPlaying {
-                nowPlayingWidget
-                    .padding(.horizontal, 10)
-            }
-            if shelf.showsDropZone {
-                dropZoneWidget
-                    .padding(.horizontal, 10)
-            }
-            if shelf.showsReminders {
-                remindersWidget
-                    .padding(.horizontal, 10)
-            }
-            if shelf.showsShortcuts {
-                shortcutsWidget
-                    .padding(.horizontal, 10)
-            }
-            if shelf.showsSwitches {
-                switchesWidget
-                    .padding(.horizontal, 10)
-            }
-
-            LazyVGrid(
-                columns: [
-                    GridItem(.flexible(), alignment: .top),
-                    GridItem(.flexible(), alignment: .top)
-                ],
-                spacing: 9
-            ) {
-                if shelf.showsCalendar { calendarWidget }
-                if shelf.showsTimer { timerWidget }
-                if shelf.showsAlarm { alarmWidget }
-                if shelf.showsBattery { batteryWidget }
-                if shelf.showsSystemHealth { systemHealthWidget }
-                if shelf.showsWeather { weatherWidget }
-                if shelf.showsClipboard { clipboardWidget }
-                if shelf.enabledWidgetCount == 0 {
-                    Label("Choose widgets in Aster → Shelf", systemImage: "square.grid.2x2")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 78)
-                        .gridCellColumns(2)
+            ForEach(shelf.widgetRows, id: \.self) { row in
+                if row.count == 1, let widget = row.first, widget.isWide {
+                    widgetView(widget)
+                } else {
+                    HStack(alignment: .top, spacing: 9) {
+                        // A compact widget with no neighbour takes the whole row.
+                        ForEach(row) { widget in
+                            widgetView(widget)
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.bottom, 10)
+
+            if shelf.widgetRows.isEmpty {
+                Label("Choose widgets in Aster → Shelf", systemImage: "square.grid.2x2")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 78)
+            }
+        }
+        .padding(.bottom, 10)
+    }
+
+    @ViewBuilder
+    private func widgetView(_ widget: ShelfWidget) -> some View {
+        switch widget {
+        case .nowPlaying: nowPlayingWidget
+        case .dropZone: dropZoneWidget
+        case .reminders: remindersWidget
+        case .shortcuts: shortcutsWidget
+        case .switches: switchesWidget
+        case .calendar: calendarWidget
+        case .timer: timerWidget
+        case .alarm: alarmWidget
+        case .battery: batteryWidget
+        case .systemHealth: systemHealthWidget
+        case .weather: weatherWidget
+        case .clipboard: clipboardWidget
         }
     }
 
@@ -198,7 +192,7 @@ struct ShelfPanelView: View {
                     .font(.caption)
                     .onSubmit(addReminder)
                 Button(action: addReminder) { Image(systemName: "plus.circle.fill") }
-                    .buttonStyle(.plain).foregroundStyle(Color.asterPurple)
+                    .buttonStyle(.plain).foregroundStyle(Color.asterAccent)
                     .disabled(reminderDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(.horizontal, 9).frame(height: 27)
@@ -212,7 +206,7 @@ struct ShelfPanelView: View {
                         Button { shelf.completeReminder(reminder) } label: {
                             Image(systemName: "circle").font(.caption)
                         }
-                        .buttonStyle(.plain).foregroundStyle(Color.asterPurple)
+                        .buttonStyle(.plain).foregroundStyle(Color.asterAccent)
                         Text(reminder.name).font(.caption).lineLimit(1)
                     }
                 }
@@ -265,7 +259,7 @@ struct ShelfPanelView: View {
                         .scaledToFill()
                 } else {
                     LinearGradient(
-                        colors: [Color.asterPurple.opacity(0.72), .black],
+                        colors: [Color.asterAccent.opacity(0.72), .black],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -294,7 +288,7 @@ struct ShelfPanelView: View {
 
                 if shelf.nowPlayingDuration > 0 {
                     ProgressView(value: shelf.currentPlaybackPosition, total: shelf.nowPlayingDuration)
-                        .tint(Color.asterPurple)
+                        .tint(Color.asterAccent)
                 }
 
                 HStack(spacing: 18) {
@@ -362,10 +356,10 @@ struct ShelfPanelView: View {
         Button { shelf.openCalendar() } label: {
             HStack(spacing: 12) {
                 VStack(spacing: 0) {
-                    Text(Date.now.formatted(.dateTime.month(.abbreviated)))
+                    Text(shelf.now.formatted(.dateTime.month(.abbreviated)))
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.red)
-                    Text(Date.now.formatted(.dateTime.day()))
+                    Text(shelf.now.formatted(.dateTime.day()))
                         .font(.system(size: 24, weight: .medium, design: .rounded))
                 }
                 VStack(alignment: .leading, spacing: 3) {
@@ -395,9 +389,9 @@ struct ShelfPanelView: View {
                     .monospacedDigit()
             } else {
                 HStack(spacing: 6) {
-                    timerButton(5)
-                    timerButton(15)
-                    timerButton(25)
+                    ForEach(Array(shelf.timerPresets.enumerated()), id: \.offset) { _, minutes in
+                        timerButton(minutes)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -418,7 +412,7 @@ struct ShelfPanelView: View {
                 Text("\(level)%")
                     .font(.system(size: 24, weight: .medium, design: .rounded))
                 ProgressView(value: Double(level), total: 100)
-                    .tint(level < 20 ? .red : Color.asterPurple)
+                    .tint(level < 20 ? .red : Color.asterAccent)
             } else {
                 Text("Power connected").font(.subheadline)
                 Text("No internal battery").font(.caption2).foregroundStyle(.secondary)
@@ -468,7 +462,7 @@ struct ShelfPanelView: View {
                 Button("Copy again") { clipboard.copy(entry) }
                     .buttonStyle(.plain)
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.asterPurple)
+                    .foregroundStyle(Color.asterAccent)
             } else {
                 Text(clipboard.isMonitoring ? "Copy something to see it here." : "Enable Clips to show recent items.")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -521,7 +515,9 @@ struct ShelfPanelView: View {
     }
 
     private func timerButton(_ minutes: Int) -> some View {
-        Button("\(minutes)m") { shelf.startTimer(minutes: minutes) }
+        Button(minutes >= 60 && minutes % 60 == 0 ? "\(minutes / 60)h" : "\(minutes)m") {
+            shelf.startTimer(minutes: minutes)
+        }
             .buttonStyle(.plain)
             .font(.caption.weight(.semibold))
             .frame(maxWidth: .infinity, minHeight: 28)
@@ -541,7 +537,7 @@ struct ShelfPanelView: View {
             Image(systemName: symbol)
                 .font(.system(size: prominent ? 13 : 11, weight: .semibold))
                 .frame(width: prominent ? 30 : 24, height: prominent ? 30 : 24)
-                .background(prominent ? Color.asterPurple.opacity(0.78) : .white.opacity(0.07), in: Circle())
+                .background(prominent ? Color.asterAccent.opacity(0.78) : .white.opacity(0.07), in: Circle())
         }
         .buttonStyle(.plain)
     }
@@ -563,7 +559,7 @@ struct ShelfPanelView: View {
             .foregroundStyle(isOn ? Color.white : Color.secondary)
             .frame(maxWidth: .infinity, minHeight: 57)
             .background(
-                isOn ? Color.asterPurple.opacity(0.72) : Color.white.opacity(0.06),
+                isOn ? Color.asterAccent.opacity(0.72) : Color.white.opacity(0.06),
                 in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
             .overlay(alignment: .topTrailing) {
@@ -579,7 +575,7 @@ struct ShelfPanelView: View {
     private func healthRow(_ label: String, value: Double) -> some View {
         HStack(spacing: 7) {
             Text(label).font(.caption2).foregroundStyle(.secondary).frame(width: 44, alignment: .leading)
-            ProgressView(value: value).tint(Color.asterPurple)
+            ProgressView(value: value).tint(Color.asterAccent)
             Text("\(Int((value * 100).rounded()))%")
                 .font(.caption2.monospacedDigit()).frame(width: 28, alignment: .trailing)
         }
@@ -591,6 +587,9 @@ struct ShelfPanelView: View {
 
     private func durationText(_ interval: TimeInterval) -> String {
         let seconds = max(Int(interval.rounded(.up)), 0)
+        if seconds >= 3_600 {
+            return String(format: "%d:%02d:%02d", seconds / 3_600, seconds / 60 % 60, seconds % 60)
+        }
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 

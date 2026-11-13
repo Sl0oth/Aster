@@ -29,7 +29,7 @@ final class ClipsPanelController {
                 Task { @MainActor [weak self] in self?.reregisterHotKey() }
             }
         }
-        setEnabled(clipboard.isMonitoring)
+        setEnabled(clipboard.isPanelAvailable)
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -65,6 +65,17 @@ final class ClipsPanelController {
         if let outsideClickMonitor {
             NSEvent.removeMonitor(outsideClickMonitor)
             self.outsideClickMonitor = nil
+        }
+    }
+
+    /// Called after a clip was chosen in the panel: closes it and, when the user
+    /// asked for it, pastes into the app they were working in.
+    private func finishCopy() {
+        dismiss()
+        guard clipboard?.pastesAfterCopy == true else { return }
+        // Give the previous app a moment to take keyboard focus back.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            ClipsPasteAction.pasteIntoFrontmostApp()
         }
     }
 
@@ -151,7 +162,7 @@ final class ClipsPanelController {
     }
 
     private func reregisterHotKey() {
-        guard clipboard?.isMonitoring == true else { return }
+        guard clipboard?.isPanelAvailable == true else { return }
         unregisterHotKey()
         registerHotKeyIfNeeded()
     }
@@ -197,8 +208,13 @@ final class ClipsPanelController {
         panel.isMovable = false
         panel.animationBehavior = .utilityWindow
         panel.contentView = NSHostingView(
-            rootView: ClipsPopupView(onDismiss: { [weak self] in self?.dismiss() })
+            rootView: ClipsPopupView(
+                shortcuts: shortcuts,
+                onCopied: { [weak self] in self?.finishCopy() },
+                onDismiss: { [weak self] in self?.dismiss() }
+            )
                 .environment(clipboard)
+                .asterAccentAware()
                 .preferredColorScheme(.dark)
         )
         self.panel = panel
@@ -231,6 +247,29 @@ final class ClipsPanelController {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.dismiss() }
         }
+    }
+}
+
+/// Sends ⌘V to the frontmost app. macOS only allows this once Aster has been
+/// granted Accessibility access.
+@MainActor
+enum ClipsPasteAction {
+    static var isAllowed: Bool { CGPreflightPostEventAccess() }
+
+    /// Asks macOS to show its permission prompt. Returns whether access is already granted.
+    @discardableResult
+    static func requestAccess() -> Bool { CGRequestPostEventAccess() }
+
+    static func pasteIntoFrontmostApp() {
+        guard isAllowed else { return }
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let keyCode: CGKeyCode = 9 // V
+        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
+        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        keyDown?.flags = .maskCommand
+        keyUp?.flags = .maskCommand
+        keyDown?.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp?.post(tap: .cgAnnotatedSessionEventTap)
     }
 }
 

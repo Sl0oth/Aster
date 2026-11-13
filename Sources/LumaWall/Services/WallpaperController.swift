@@ -1,7 +1,75 @@
 import AppKit
 import AVFoundation
 import Darwin
+import IOKit.ps
 import Observation
+
+/// How a wallpaper has to be shown on the desktop.
+enum DesktopMedia: Equatable, Sendable {
+    case still
+    case animatedImage
+    case video
+
+    init(_ item: WallpaperItem) {
+        switch item.kind {
+        case .video: self = .video
+        case .image: self = item.isGIF ? .animatedImage : .still
+        }
+    }
+
+    var isMotion: Bool { self != .still }
+}
+
+/// A wallpaper chosen for the desktop, for every display or for one of them.
+struct DesktopAssignment: Equatable, Sendable {
+    let itemID: UUID
+    let url: URL
+    let media: DesktopMedia
+}
+
+/// What one display shows, worked out from the user's choices.
+struct DesktopSurfacePlan: Equatable, Sendable {
+    enum Presentation: Equatable, Sendable {
+        /// A still that macOS draws as the system wallpaper.
+        case systemWallpaper
+        /// A still Aster draws itself, because the system wallpaper is holding
+        /// a different picture for the Lock Screen.
+        case stillWindow
+        case animatedImageWindow
+        case videoWindow
+    }
+
+    let itemID: UUID
+    let url: URL
+    let presentation: Presentation
+
+    var isMotion: Bool {
+        presentation == .animatedImageWindow || presentation == .videoWindow
+    }
+
+    /// macOS shows the system wallpaper on the Lock Screen, so a Lock Screen
+    /// still takes that slot. A different desktop still must then be drawn by
+    /// Aster above it instead of replacing it.
+    static func plan(
+        for assignment: DesktopAssignment?,
+        lockScreenItemID: UUID?
+    ) -> DesktopSurfacePlan? {
+        guard let assignment else { return nil }
+        let presentation: Presentation = switch assignment.media {
+        case .video: .videoWindow
+        case .animatedImage: .animatedImageWindow
+        case .still:
+            lockScreenItemID == nil || lockScreenItemID == assignment.itemID
+                ? .systemWallpaper
+                : .stillWindow
+        }
+        return DesktopSurfacePlan(
+            itemID: assignment.itemID,
+            url: assignment.url,
+            presentation: presentation
+        )
+    }
+}
 
 @MainActor
 @Observable
@@ -12,25 +80,18 @@ final class WallpaperController {
         case screenSaver = "Screen Saver"
 
         var id: String { rawValue }
-        var displayName: String {
-            switch self {
-            case .desktop: "Desktop"
-            case .lockScreen: "Manual-Lock Still"
-            case .screenSaver: "Saver + Auto-Lock"
-            }
-        }
         var symbol: String {
             switch self {
             case .desktop: "desktopcomputer"
-            case .lockScreen: "lock.display"
-            case .screenSaver: "sparkles.rectangle.stack"
+            case .lockScreen: "lock.fill"
+            case .screenSaver: "sparkles"
             }
         }
-        var badge: String {
+        var detail: String {
             switch self {
-            case .desktop: "D"
-            case .lockScreen: "L"
-            case .screenSaver: "S"
+            case .desktop: "Behind your windows"
+            case .lockScreen: "When you lock or wake"
+            case .screenSaver: "While your Mac is idle"
             }
         }
     }
@@ -49,6 +110,9 @@ final class WallpaperController {
         case fifteenMinutes = 900
         case thirtyMinutes = 1_800
         case oneHour = 3_600
+        case threeHours = 10_800
+        case twelveHours = 43_200
+        case oneDay = 86_400
 
         var id: Int { rawValue }
         var label: String {
@@ -59,6 +123,36 @@ final class WallpaperController {
             case .fifteenMinutes: "15 minutes"
             case .thirtyMinutes: "30 minutes"
             case .oneHour: "1 hour"
+            case .threeHours: "3 hours"
+            case .twelveHours: "12 hours"
+            case .oneDay: "24 hours"
+            }
+        }
+    }
+
+    enum ShuffleOrder: String, CaseIterable, Identifiable {
+        case random = "Random"
+        case inOrder = "In order"
+        var id: String { rawValue }
+    }
+
+    enum PlaybackSpeed: Double, CaseIterable, Identifiable {
+        case half = 0.5
+        case threeQuarters = 0.75
+        case normal = 1
+        case oneAndQuarter = 1.25
+        case oneAndHalf = 1.5
+        case double = 2
+
+        var id: Double { rawValue }
+        var label: String {
+            switch self {
+            case .half: "0.5×"
+            case .threeQuarters: "0.75×"
+            case .normal: "Normal"
+            case .oneAndQuarter: "1.25×"
+            case .oneAndHalf: "1.5×"
+            case .double: "2×"
             }
         }
     }
@@ -107,6 +201,7 @@ final class WallpaperController {
         case fullScreenApplication(String)
         case highSystemLoad(Int)
         case lowPowerMode
+        case batteryPower
 
         var message: String {
             switch self {
@@ -116,6 +211,8 @@ final class WallpaperController {
                 "system CPU usage is \(percent)%"
             case .lowPowerMode:
                 "Low Power Mode is enabled"
+            case .batteryPower:
+                "this Mac is on battery power"
             }
         }
     }
@@ -131,13 +228,23 @@ final class WallpaperController {
             defaults.set(isEnabled, forKey: enabledKey)
             if isEnabled {
                 statusMessage = "Canvas is ready"
+                // Bring back what Aster was drawing before Canvas was turned off.
+                try? rebuildDesktop(appliesSystemWallpaper: false)
             } else {
                 stopShuffle(message: "Canvas is off")
                 stopAnimatedWallpaper()
             }
         }
     }
-    private(set) var activeItemID: UUID?
+    /// The wallpaper for every display that has no choice of its own.
+    private var defaultAssignment: DesktopAssignment?
+    /// Wallpapers chosen for one display, keyed by `NSScreen.asterDisplayKey`.
+    private var displayAssignments: [String: DesktopAssignment] = [:]
+    private var didLoadDisplayAssignments = false
+    private var lockScreenURL: URL?
+    /// False after launch when the user turned off resuming motion wallpapers.
+    private var showsMotionSurfaces = true
+    var activeItemID: UUID? { defaultAssignment?.itemID }
     private(set) var isAnimating = false
     private(set) var isApplying = false
     private(set) var statusMessage = "Choose a wallpaper to begin"
@@ -179,21 +286,43 @@ final class WallpaperController {
             }
         }
     }
-    var editingDestination: CanvasDestination = .desktop {
-        didSet { defaults.set(editingDestination.rawValue, forKey: destinationKey) }
-    }
     var fillMode: FillMode = .fill {
         didSet {
             guard fillMode != oldValue else { return }
             defaults.set(fillMode.rawValue, forKey: fillModeKey)
             updateActiveWallpaperScaling()
+            synchronizeScreenSaverPresentation()
         }
     }
     var muted = true {
         didSet {
-            videoWindows.forEach { $0.player.isMuted = muted }
+            guard muted != oldValue else { return }
+            defaults.set(muted, forKey: mutedKey)
+            surfaces.forEach { $0.setMuted(muted) }
+            synchronizeScreenSaverPresentation()
         }
     }
+    var playbackSpeed: PlaybackSpeed = .normal {
+        didSet {
+            guard playbackSpeed != oldValue else { return }
+            defaults.set(playbackSpeed.rawValue, forKey: playbackSpeedKey)
+            surfaces.forEach { $0.setPlaybackRate(Float(playbackSpeed.rawValue)) }
+        }
+    }
+    /// Darkens motion wallpapers so desktop icons and widgets stay readable. 0 is off.
+    var motionDimming = 0.0 {
+        didSet {
+            let clamped = min(max(motionDimming, 0), Self.maximumMotionDimming)
+            if motionDimming != clamped {
+                motionDimming = clamped
+                return
+            }
+            guard motionDimming != oldValue else { return }
+            defaults.set(motionDimming, forKey: motionDimmingKey)
+            surfaces.forEach { $0.setDimming(motionDimming) }
+        }
+    }
+    static let maximumMotionDimming = 0.8
     var autoResumeMotionWallpaper: Bool = true {
         didSet {
             defaults.set(autoResumeMotionWallpaper, forKey: autoResumeKey)
@@ -229,18 +358,29 @@ final class WallpaperController {
             evaluateSmartPausePolicy(samplesSystemLoad: false)
         }
     }
+    var pauseMotionOnBattery = false {
+        didSet {
+            guard pauseMotionOnBattery != oldValue else { return }
+            defaults.set(pauseMotionOnBattery, forKey: pauseOnBatteryKey)
+            evaluateSmartPausePolicy(samplesSystemLoad: false)
+        }
+    }
     private(set) var motionPauseReason: MotionPauseReason?
     private(set) var currentSystemLoadPercent: Int?
     private var globalMotionPauseReason: MotionPauseReason?
     private var fullScreenDisplayApplications: [CGDirectDisplayID: String] = [:]
+    /// Motion displays that are paused because something covers them.
+    private var coveredMotionDisplayCount: Int {
+        motionSurfaces.count { fullScreenDisplayApplications[$0.displayID] != nil }
+    }
     var isMotionWallpaperPaused: Bool {
-        globalMotionPauseReason != nil || !fullScreenDisplayApplications.isEmpty
+        globalMotionPauseReason != nil || coveredMotionDisplayCount > 0
     }
     var smartPauseStatusMessage: String {
         if let globalMotionPauseReason {
             return "Paused — \(globalMotionPauseReason.message)"
         }
-        if !fullScreenDisplayApplications.isEmpty {
+        if coveredMotionDisplayCount > 0 {
             return fullScreenPauseMessage
         }
         if isAnimating, let currentSystemLoadPercent, pauseMotionForHighSystemLoad {
@@ -256,17 +396,27 @@ final class WallpaperController {
             restartShuffleTask()
         }
     }
+    var shuffleOrder: ShuffleOrder = .random {
+        didSet {
+            guard shuffleOrder != oldValue else { return }
+            defaults.set(shuffleOrder.rawValue, forKey: shuffleOrderKey)
+            shuffleQueue.removeAll()
+        }
+    }
     private(set) var shuffleItemIDs: Set<UUID> = []
+    private(set) var nextShuffleDate: Date?
     private(set) var isShuffling = false
     private(set) var shouldResumeShuffle = false
     var launchAtLogin = false
     private(set) var launchAtLoginStatusMessage = "Aster will stay available after you sign in."
 
-    private var videoWindows: [DesktopVideoWindow] = []
-    private var retiringVideoWindows: [DesktopVideoWindow] = []
+    /// The windows Aster draws on the desktop: videos, GIFs, and stills that
+    /// cannot be the system wallpaper.
+    private var surfaces: [any DesktopSurface] = []
+    private var retiringSurfaces: [any DesktopSurface] = []
+    private var motionSurfaces: [any DesktopSurface] { surfaces.filter(\.isMotion) }
     private var desktopInteractionWindows: [DesktopInteractionWindow] = []
     private var screenObserver: NSObjectProtocol?
-    private var desktopInteractionScreenObserver: NSObjectProtocol?
     private var applicationObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var playbackActivity: NSObjectProtocol?
@@ -279,10 +429,9 @@ final class WallpaperController {
     private var shuffleTask: Task<Void, Never>?
     private weak var shuffleLibrary: WallpaperLibrary?
     private var shuffleQueue: [UUID] = []
+    private var screenSaverPresentationTask: Task<Void, Never>?
     private var isRecoveringPlayback = false
     private var didAttemptRestore = false
-    private var activeItemURL: URL?
-    private var activeItemKind: WallpaperItem.Kind?
     private let defaults: UserDefaults
     private let managesInstalledScreenSaver: Bool
     private let enabledKey = "Aster.Canvas.enabled"
@@ -294,12 +443,17 @@ final class WallpaperController {
     private let fillModeKey = "Aster.Canvas.fillMode"
     private let lastAppliedKey = "Aster.Canvas.lastAppliedWallpaper"
     private let lastMotionAppliedKey = "Aster.Canvas.lastMotionWallpaper"
+    private let displayWallpapersKey = "Aster.Canvas.displayWallpapers"
     private let screenSaverConfiguredKey = "Aster.Canvas.screenSaverConfigured"
     private let screenSaverShiftIntervalKey = "Aster.Canvas.screenSaverPixelShiftInterval"
     private let screenSaverRotationIntervalKey = "Aster.Canvas.screenSaverRotationInterval"
     private let lockScreenItemKey = "Aster.Canvas.lockScreenWallpaper"
     private let screenSaverItemKey = "Aster.Canvas.screenSaverWallpaper"
-    private let destinationKey = "Aster.Canvas.editingDestination"
+    private let mutedKey = "Aster.Canvas.muted"
+    private let playbackSpeedKey = "Aster.Canvas.playbackSpeed"
+    private let motionDimmingKey = "Aster.Canvas.motionDimming"
+    private let pauseOnBatteryKey = "Aster.Canvas.smartPause.batteryPower"
+    private let shuffleOrderKey = "Aster.Canvas.shuffleOrder"
     private let shuffleRateKey = "Aster.Canvas.shuffleRate"
     private let shuffleItemsKey = "Aster.Canvas.shuffleItems"
     private let shuffleRunningKey = "Aster.Canvas.shuffleRunning"
@@ -320,6 +474,14 @@ final class WallpaperController {
         let storedLoadThreshold = defaults.object(forKey: highSystemLoadThresholdKey) as? Double ?? 80
         highSystemLoadThreshold = min(max(storedLoadThreshold, 50), 95)
         pauseMotionInLowPowerMode = defaults.object(forKey: pauseInLowPowerModeKey) as? Bool ?? false
+        pauseMotionOnBattery = defaults.object(forKey: pauseOnBatteryKey) as? Bool ?? false
+        muted = defaults.object(forKey: mutedKey) as? Bool ?? true
+        if let storedSpeed = defaults.object(forKey: playbackSpeedKey) as? Double,
+           let speed = PlaybackSpeed(rawValue: storedSpeed) {
+            playbackSpeed = speed
+        }
+        let storedDimming = defaults.object(forKey: motionDimmingKey) as? Double ?? 0
+        motionDimming = min(max(storedDimming, 0), Self.maximumMotionDimming)
         screenSaverIsInstalled = self.managesInstalledScreenSaver
             && ScreenSaverInstaller.isInstalled
         screenSaverIsConfigured = defaults.bool(forKey: screenSaverConfiguredKey)
@@ -348,10 +510,6 @@ final class WallpaperController {
         }
         lockScreenItemID = storedUUID(forKey: lockScreenItemKey)
         screenSaverItemID = storedUUID(forKey: screenSaverItemKey)
-        if let storedDestination = defaults.string(forKey: destinationKey),
-           let destination = CanvasDestination(rawValue: storedDestination) {
-            editingDestination = destination
-        }
         if screenSaverIsConfigured,
            lockScreenItemID == nil,
            screenSaverItemID == nil,
@@ -368,6 +526,10 @@ final class WallpaperController {
         ) {
             shuffleRate = storedShuffleRate
         }
+        if let storedOrder = defaults.string(forKey: shuffleOrderKey),
+           let order = ShuffleOrder(rawValue: storedOrder) {
+            shuffleOrder = order
+        }
         shuffleItemIDs = Set(
             (defaults.stringArray(forKey: shuffleItemsKey) ?? [])
                 .compactMap(UUID.init(uuidString:))
@@ -375,26 +537,33 @@ final class WallpaperController {
         shouldResumeShuffle = defaults.bool(forKey: shuffleRunningKey)
     }
 
-    func apply(_ item: WallpaperItem, url: URL) {
+    /// Sets the desktop wallpaper. With a `displayKey` only that display changes;
+    /// without one the wallpaper goes on every display and replaces any
+    /// per-display choices.
+    func apply(_ item: WallpaperItem, url: URL, displayKey: String? = nil) {
         guard isEnabled, !isApplying else { return }
         isApplying = true
         statusMessage = "Applying…"
-        stopAnimatedWallpaper()
+        let assignment = DesktopAssignment(itemID: item.id, url: url, media: DesktopMedia(item))
+        if let displayKey {
+            displayAssignments[displayKey] = assignment
+        } else {
+            defaultAssignment = assignment
+            displayAssignments.removeAll()
+        }
+        persistDesktopAssignments()
+        showsMotionSurfaces = true
         do {
-            switch item.kind {
-            case .image:
-                try applyImage(url)
-                installDesktopInteractionWindowsIfNeeded()
-                statusMessage = "Applied to \(NSScreen.screens.count) display\(NSScreen.screens.count == 1 ? "" : "s")"
-            case .video:
-                applyVideo(url)
+            try rebuildDesktop(appliesSystemWallpaper: true, reusesSurfaces: true)
+            if let displayKey,
+               let screen = NSScreen.screens.first(where: { $0.asterDisplayKey == displayKey }) {
+                statusMessage = "Set on \(screen.localizedName)"
+            } else if assignment.media.isMotion {
                 statusMessage = "Motion wallpaper is playing"
-                defaults.set(item.id.uuidString, forKey: lastMotionAppliedKey)
+            } else {
+                let count = NSScreen.screens.count
+                statusMessage = "Applied to \(count) display\(count == 1 ? "" : "s")"
             }
-            activeItemID = item.id
-            activeItemURL = url
-            activeItemKind = item.kind
-            defaults.set(item.id.uuidString, forKey: lastAppliedKey)
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -404,9 +573,9 @@ final class WallpaperController {
         }
     }
 
-    func assign(_ item: WallpaperItem, url: URL) {
+    func assign(_ item: WallpaperItem, url: URL, to destination: CanvasDestination) {
         guard isEnabled else { return }
-        switch editingDestination {
+        switch destination {
         case .desktop:
             apply(item, url: url)
         case .lockScreen:
@@ -416,12 +585,73 @@ final class WallpaperController {
         }
     }
 
+    /// Takes a wallpaper off the desktop because the user asked to, so it stays
+    /// off after Aster restarts. The system wallpaper underneath becomes visible.
+    func stopMotionWallpaper(_ item: WallpaperItem) {
+        if defaultAssignment?.itemID == item.id { defaultAssignment = nil }
+        displayAssignments = displayAssignments.filter { $0.value.itemID != item.id }
+        persistDesktopAssignments()
+        try? rebuildDesktop(appliesSystemWallpaper: false, reusesSurfaces: true)
+        statusMessage = "Motion wallpaper stopped"
+    }
+
     func assignedItemID(for destination: CanvasDestination) -> UUID? {
         switch destination {
-        case .desktop: activeItemID ?? storedUUID(forKey: lastAppliedKey)
+        case .desktop: activeItemID
         case .lockScreen: lockScreenItemID
         case .screenSaver: screenSaverItemID
         }
+    }
+
+    /// The connected displays showing this wallpaper on the desktop.
+    func desktopDisplayKeys(for item: WallpaperItem) -> [String] {
+        NSScreen.screens.map(\.asterDisplayKey).filter {
+            assignment(forDisplayKey: $0)?.itemID == item.id
+        }
+    }
+
+    func isAssigned(_ item: WallpaperItem, to destination: CanvasDestination) -> Bool {
+        switch destination {
+        case .desktop:
+            NSScreen.screens.isEmpty
+                ? defaultAssignment?.itemID == item.id
+                : !desktopDisplayKeys(for: item).isEmpty
+        case .lockScreen: lockScreenItemID == item.id
+        case .screenSaver: screenSaverItemID == item.id
+        }
+    }
+
+    /// Whether this wallpaper is a video or GIF that Aster is drawing right now.
+    func isPlayingOnDesktop(_ item: WallpaperItem) -> Bool {
+        surfaces.contains { $0.isMotion && $0.plan.itemID == item.id }
+    }
+
+    private func assignment(forDisplayKey key: String) -> DesktopAssignment? {
+        displayAssignments[key] ?? defaultAssignment
+    }
+
+    private var hasDesktopAssignments: Bool {
+        defaultAssignment != nil || !displayAssignments.isEmpty
+    }
+
+    private func persistDesktopAssignments() {
+        if let defaultAssignment {
+            defaults.set(defaultAssignment.itemID.uuidString, forKey: lastAppliedKey)
+            if defaultAssignment.media.isMotion {
+                defaults.set(defaultAssignment.itemID.uuidString, forKey: lastMotionAppliedKey)
+            } else {
+                // A still replaces the motion wallpaper for good; without this the
+                // previous video would come back the next time Aster opens.
+                defaults.removeObject(forKey: lastMotionAppliedKey)
+            }
+        } else {
+            defaults.removeObject(forKey: lastAppliedKey)
+            defaults.removeObject(forKey: lastMotionAppliedKey)
+        }
+        defaults.set(
+            displayAssignments.mapValues(\.itemID.uuidString),
+            forKey: displayWallpapersKey
+        )
     }
 
     func isSelectedForShuffle(_ item: WallpaperItem) -> Bool {
@@ -440,6 +670,29 @@ final class WallpaperController {
         if isShuffling, shuffleItemIDs.count < 2 {
             stopShuffle(message: "Select at least two wallpapers to shuffle")
         }
+    }
+
+    func selectAllForShuffle(in library: WallpaperLibrary) {
+        guard isEnabled else { return }
+        shuffleItemIDs = Set(library.items.lazy.filter(\.canShuffle).map(\.id))
+        persistShuffleSelection()
+    }
+
+    func clearShuffleSelection() {
+        guard isEnabled else { return }
+        shuffleItemIDs.removeAll()
+        shuffleQueue.removeAll()
+        persistShuffleSelection()
+        if isShuffling {
+            stopShuffle(message: "Select at least two wallpapers to shuffle")
+        }
+    }
+
+    /// Moves to the next shuffled wallpaper now and restarts the countdown.
+    func skipToNextShuffleItem() {
+        guard isEnabled, isShuffling, !isApplying, let library = shuffleLibrary else { return }
+        advanceShuffle(in: library)
+        restartShuffleTask()
     }
 
     func shuffleSelectionCount(in library: WallpaperLibrary) -> Int {
@@ -501,32 +754,67 @@ final class WallpaperController {
         }
     }
 
+    /// Brings back, after launch, everything Aster draws on the desktop itself:
+    /// videos and GIFs when resuming is on, and stills held above a Lock Screen
+    /// picture. Stills that are the system wallpaper need nothing.
     func restoreMotionWallpaperIfNeeded(from library: WallpaperLibrary) {
-        guard isEnabled, autoResumeMotionWallpaper, !didAttemptRestore, !isAnimating else { return }
-
-        let storedID = defaults.string(forKey: lastMotionAppliedKey)
-            ?? defaults.string(forKey: lastAppliedKey)
-        guard let storedID,
-              let id = UUID(uuidString: storedID),
-              let item = library.items.first(where: { $0.id == id && $0.kind == .video }) else {
-            statusMessage = "The previous motion wallpaper is no longer in Canvas"
-            return
-        }
-
+        guard isEnabled, !didAttemptRestore, surfaces.isEmpty else { return }
         didAttemptRestore = true
-        library.selectedID = item.id
-        apply(item, url: library.url(for: item))
+        validateAssignments(in: library)
+        showsMotionSurfaces = autoResumeMotionWallpaper
+        try? rebuildDesktop(appliesSystemWallpaper: false)
+        guard isAnimating else { return }
+        if let defaultAssignment, defaultAssignment.media.isMotion {
+            library.selectedID = defaultAssignment.itemID
+        }
+        statusMessage = "Motion wallpaper is playing"
     }
 
+    /// Removes everything Aster draws on the desktop without forgetting what
+    /// was chosen.
     func stopAnimatedWallpaper() {
-        if let screenObserver {
+        retireSurfaces(surfaces)
+        surfaces.removeAll()
+        synchronizeDesktopState()
+    }
+
+    /// Brings observers, Smart Pause, and the click-through helper windows in
+    /// line with the surfaces that now exist.
+    private func synchronizeDesktopState() {
+        rebuildDesktopInteractionWindows()
+
+        let needsScreenObserver = !surfaces.isEmpty || !desktopInteractionWindows.isEmpty
+        if needsScreenObserver, screenObserver == nil {
+            screenObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didChangeScreenParametersNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    // Displays keep their own system wallpaper; only Aster's
+                    // windows have to follow the new arrangement.
+                    try? self?.rebuildDesktop(appliesSystemWallpaper: false)
+                }
+            }
+        } else if !needsScreenObserver, let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
             self.screenObserver = nil
         }
-        if let desktopInteractionScreenObserver {
-            NotificationCenter.default.removeObserver(desktopInteractionScreenObserver)
-            self.desktopInteractionScreenObserver = nil
+
+        let hasMotion = surfaces.contains(where: \.isMotion)
+        if hasMotion, !isAnimating {
+            beginPlaybackActivityIfNeeded()
+            observePlaybackLifecycle()
+            isAnimating = true
+            startSmartPauseMonitoring()
+            evaluateSmartPausePolicy()
+        } else if !hasMotion, isAnimating {
+            endMotionLifecycle()
         }
+        applySmartPausePlaybackState()
+    }
+
+    private func endMotionLifecycle() {
         applicationObservers.forEach(NotificationCenter.default.removeObserver)
         applicationObservers.removeAll()
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
@@ -542,31 +830,21 @@ final class WallpaperController {
         globalMotionPauseReason = nil
         fullScreenDisplayApplications.removeAll()
         isRecoveringPlayback = false
-        retireCurrentVideoWindows()
-        desktopInteractionWindows.forEach { $0.close() }
-        desktopInteractionWindows.removeAll()
-        if let playbackActivity {
-            ProcessInfo.processInfo.endActivity(playbackActivity)
-            self.playbackActivity = nil
-        }
+        endPlaybackActivityIfNeeded()
         isAnimating = false
     }
 
-    private func installDesktopInteractionWindowsIfNeeded() {
-        guard DesktopInteractionSupport.needsAsterHitTarget else { return }
-        rebuildDesktopInteractionWindows()
-        desktopInteractionScreenObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.rebuildDesktopInteractionWindows() }
-        }
-    }
-
+    /// When Finder's desktop is hidden, nothing receives clicks on the wallpaper.
+    /// Aster's own windows handle them; these cover the displays without one.
     private func rebuildDesktopInteractionWindows() {
         desktopInteractionWindows.forEach { $0.close() }
-        desktopInteractionWindows = NSScreen.screens.map(DesktopInteractionWindow.init)
+        desktopInteractionWindows.removeAll()
+        guard isEnabled, hasDesktopAssignments,
+              DesktopInteractionSupport.needsAsterHitTarget else { return }
+        let coveredDisplayIDs = Set(surfaces.map(\.displayID))
+        desktopInteractionWindows = NSScreen.screens
+            .filter { !coveredDisplayIDs.contains($0.asterDisplayID) }
+            .map(DesktopInteractionWindow.init)
     }
 
     private func advanceShuffle(in library: WallpaperLibrary) {
@@ -581,7 +859,17 @@ final class WallpaperController {
         let eligibleIDs = Set(eligibleItems.map(\.id))
         shuffleQueue.removeAll { !eligibleIDs.contains($0) || $0 == activeItemID }
         if shuffleQueue.isEmpty {
-            shuffleQueue = eligibleItems.map(\.id).filter { $0 != activeItemID }.shuffled()
+            let ids = eligibleItems.map(\.id)
+            switch shuffleOrder {
+            case .random:
+                shuffleQueue = ids.filter { $0 != activeItemID }.shuffled()
+            case .inOrder:
+                if let activeItemID, let index = ids.firstIndex(of: activeItemID) {
+                    shuffleQueue = Array(ids[(index + 1)...] + ids[..<index])
+                } else {
+                    shuffleQueue = ids
+                }
+            }
         }
         guard let nextID = shuffleQueue.first,
               let nextItem = eligibleItems.first(where: { $0.id == nextID }) else { return }
@@ -598,8 +886,10 @@ final class WallpaperController {
         shuffleTask?.cancel()
         shuffleTask = nil
         guard isShuffling, let library = shuffleLibrary else { return }
+        let nextDate = Date().addingTimeInterval(TimeInterval(delay))
+        nextShuffleDate = nextDate
         if updatesNextDate {
-            defaults.set(Date().addingTimeInterval(TimeInterval(delay)), forKey: shuffleNextDateKey)
+            defaults.set(nextDate, forKey: shuffleNextDateKey)
         }
         shuffleTask = Task { @MainActor [weak self, weak library] in
             do {
@@ -618,6 +908,7 @@ final class WallpaperController {
         shuffleTask = nil
         shuffleLibrary = nil
         shuffleQueue.removeAll()
+        nextShuffleDate = nil
         isShuffling = false
         setShuffleRunningPreference(false)
         statusMessage = message
@@ -630,13 +921,9 @@ final class WallpaperController {
     }
 
     private func restoreCurrentShuffleVideoIfNeeded(from library: WallpaperLibrary) {
-        guard let storedID = defaults.string(forKey: lastAppliedKey),
-              let id = UUID(uuidString: storedID),
-              let item = library.items.first(where: { $0.id == id && $0.kind == .video }) else {
-            return
-        }
-        library.selectedID = item.id
-        apply(item, url: library.url(for: item))
+        validateAssignments(in: library)
+        showsMotionSurfaces = true
+        try? rebuildDesktop(appliesSystemWallpaper: false)
     }
 
     private func persistShuffleSelection() {
@@ -685,29 +972,116 @@ final class WallpaperController {
     func configureLockScreen(_ item: WallpaperItem, url: URL) {
         guard isEnabled else { return }
         guard item.canUseAsLockScreenStill else {
-            screenSaverStatusMessage = "Manual Lock Screen supports still images only"
+            screenSaverStatusMessage = "The Lock Screen supports still images only"
             return
         }
+        let previousID = lockScreenItemID
+        let previousURL = lockScreenURL
         do {
-            // macOS uses this system-owned desktop layer for manual lock, lid close,
-            // and wake. An already-running Aster saver remains visible on auto-lock.
-            try applyImage(url)
+            // macOS shows the system wallpaper on the Lock Screen after a manual
+            // lock, lid close, or wake, so the still goes there on every display.
+            for screen in NSScreen.screens {
+                try setSystemWallpaper(url, for: screen)
+            }
             lockScreenItemID = item.id
+            lockScreenURL = url
             defaults.set(item.id.uuidString, forKey: lockScreenItemKey)
-            screenSaverStatusMessage = "Manual Lock Screen still set to \(item.name)"
+            // A different desktop still now has to be drawn by Aster on top.
+            try rebuildDesktop(appliesSystemWallpaper: false, reusesSurfaces: true)
+            screenSaverStatusMessage = "Lock Screen set to \(item.name)"
+        } catch {
+            lockScreenItemID = previousID
+            lockScreenURL = previousURL
+            screenSaverStatusMessage = error.localizedDescription
+        }
+    }
+
+    /// Stops managing the Lock Screen. Desktop stills become the system
+    /// wallpaper again, so the Lock Screen follows the Desktop.
+    func clearLockScreen() {
+        guard isEnabled, lockScreenItemID != nil else { return }
+        lockScreenItemID = nil
+        lockScreenURL = nil
+        defaults.removeObject(forKey: lockScreenItemKey)
+        do {
+            try rebuildDesktop(appliesSystemWallpaper: true, reusesSurfaces: true)
+            screenSaverStatusMessage = defaultAssignment?.media == .still
+                ? "The Lock Screen now matches your Desktop"
+                : "The Lock Screen keeps its picture until you set a new one"
         } catch {
             screenSaverStatusMessage = error.localizedDescription
         }
     }
 
+    /// Reconciles the saved assignments with the library: loads what was chosen
+    /// before, and forgets wallpapers that were removed.
     func validateAssignments(in library: WallpaperLibrary) {
-        guard let lockScreenItemID else { return }
-        guard let item = library.items.first(where: { $0.id == lockScreenItemID }),
-              item.canUseAsLockScreenStill else {
-            self.lockScreenItemID = nil
-            defaults.removeObject(forKey: lockScreenItemKey)
-            screenSaverStatusMessage = "Choose a still image for manual Lock Screen"
-            return
+        func resolve(_ id: UUID) -> DesktopAssignment? {
+            library.items.first { $0.id == id }.map {
+                DesktopAssignment(itemID: id, url: library.url(for: $0), media: DesktopMedia($0))
+            }
+        }
+
+        var lockScreenWasRemoved = false
+        if let lockScreenItemID {
+            if let item = library.items.first(where: { $0.id == lockScreenItemID }),
+               item.canUseAsLockScreenStill {
+                lockScreenURL = library.url(for: item)
+            } else {
+                self.lockScreenItemID = nil
+                lockScreenURL = nil
+                defaults.removeObject(forKey: lockScreenItemKey)
+                screenSaverStatusMessage = "Choose a still image for the Lock Screen"
+                lockScreenWasRemoved = true
+            }
+        }
+        if let screenSaverItemID,
+           !library.items.contains(where: { $0.id == screenSaverItemID }) {
+            // The installed saver keeps its own copy, so it continues to work.
+            self.screenSaverItemID = nil
+            defaults.removeObject(forKey: screenSaverItemKey)
+        }
+
+        var removedDesktopWallpaper = false
+        if let current = defaultAssignment {
+            if resolve(current.itemID) == nil {
+                defaultAssignment = nil
+                removedDesktopWallpaper = true
+            }
+        } else if let storedID = storedUUID(forKey: lastAppliedKey)
+                    ?? storedUUID(forKey: lastMotionAppliedKey) {
+            defaultAssignment = resolve(storedID)
+            if defaultAssignment == nil { removedDesktopWallpaper = true }
+        }
+
+        if !didLoadDisplayAssignments {
+            didLoadDisplayAssignments = true
+            let stored = defaults.dictionary(forKey: displayWallpapersKey) as? [String: String] ?? [:]
+            for (displayKey, value) in stored {
+                guard let id = UUID(uuidString: value) else { continue }
+                if let assignment = resolve(id) {
+                    displayAssignments[displayKey] = assignment
+                } else {
+                    removedDesktopWallpaper = true
+                }
+            }
+        }
+        for (displayKey, assignment) in displayAssignments where resolve(assignment.itemID) == nil {
+            displayAssignments[displayKey] = nil
+            removedDesktopWallpaper = true
+        }
+
+        if removedDesktopWallpaper { persistDesktopAssignments() }
+        let showsRemovedWallpaper = surfaces.contains { surface in
+            !library.items.contains { $0.id == surface.plan.itemID }
+        }
+        if showsRemovedWallpaper {
+            statusMessage = "That wallpaper was removed from Canvas"
+        }
+        if showsRemovedWallpaper || (lockScreenWasRemoved && didAttemptRestore) {
+            // Losing the Lock Screen still lets desktop stills return to being
+            // the system wallpaper.
+            try? rebuildDesktop(appliesSystemWallpaper: lockScreenWasRemoved, reusesSurfaces: true)
         }
     }
 
@@ -731,7 +1105,7 @@ final class WallpaperController {
             defaults.set(true, forKey: screenSaverConfiguredKey)
             screenSaverItemID = item.id
             defaults.set(item.id.uuidString, forKey: screenSaverItemKey)
-            screenSaverStatusMessage = "Screen Saver and automatic lock set to \(item.name)"
+            screenSaverStatusMessage = "Screen Saver set to \(item.name)"
             if !wasInstalled { ScreenSaverInstaller.openSystemSettings() }
         } catch {
             screenSaverStatusMessage = error.localizedDescription
@@ -742,15 +1116,36 @@ final class WallpaperController {
         ScreenSaverInstaller.openSystemSettings()
     }
 
-    private func applyImage(_ url: URL) throws {
+    /// Fit and mute are shared with the installed Screen Saver. Re-signing its
+    /// bundle can take a moment, so it runs off the main thread.
+    private func synchronizeScreenSaverPresentation() {
+        guard managesInstalledScreenSaver, screenSaverIsInstalled, screenSaverIsConfigured else { return }
+        let fillMode = fillMode
+        let muted = muted
+        screenSaverPresentationTask?.cancel()
+        screenSaverPresentationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            let failure = await Task.detached(priority: .utility) { () -> String? in
+                do {
+                    try ScreenSaverInstaller.setPresentation(fillMode: fillMode, muted: muted)
+                    return nil
+                } catch {
+                    return error.localizedDescription
+                }
+            }.value
+            guard !Task.isCancelled, let failure else { return }
+            self?.screenSaverStatusMessage = failure
+        }
+    }
+
+    private func setSystemWallpaper(_ url: URL, for screen: NSScreen) throws {
         var options: [NSWorkspace.DesktopImageOptionKey: Any] = [
             .allowClipping: fillMode != .fit,
             .fillColor: NSColor.black
         ]
         options[.imageScaling] = scalingValue
-        for screen in NSScreen.screens {
-            try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: options)
-        }
+        try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: options)
     }
 
     private var scalingValue: NSNumber {
@@ -761,56 +1156,105 @@ final class WallpaperController {
         return NSNumber(value: scaling.rawValue)
     }
 
-    private func updateActiveWallpaperScaling() {
-        if isAnimating {
-            videoWindows.forEach { $0.setFillMode(fillMode) }
-            statusMessage = "Motion wallpaper set to \(fillMode.rawValue.lowercased())"
-            return
+    private func plan(for screen: NSScreen) -> DesktopSurfacePlan? {
+        DesktopSurfacePlan.plan(
+            for: assignment(forDisplayKey: screen.asterDisplayKey),
+            lockScreenItemID: lockScreenItemID
+        )
+    }
+
+    /// Makes the desktop match the current choices.
+    ///
+    /// - Parameters:
+    ///   - appliesSystemWallpaper: Hand stills to macOS as the system wallpaper.
+    ///     False when only Aster's own windows need refreshing, such as at
+    ///     launch, where the system wallpaper is already in place.
+    ///   - reusesSurfaces: Keep windows whose display and wallpaper did not
+    ///     change, so changing one display does not restart the others.
+    private func rebuildDesktop(
+        appliesSystemWallpaper: Bool,
+        reusesSurfaces: Bool = false
+    ) throws {
+        guard isEnabled else { return }
+        var firstError: Error?
+        var reusable = reusesSurfaces ? surfaces : []
+        var retiring = reusesSurfaces ? [] : surfaces
+        var rebuilt: [any DesktopSurface] = []
+
+        for screen in NSScreen.screens {
+            guard let plan = plan(for: screen) else { continue }
+            if plan.presentation == .systemWallpaper {
+                if appliesSystemWallpaper {
+                    do {
+                        try setSystemWallpaper(plan.url, for: screen)
+                    } catch {
+                        firstError = firstError ?? error
+                    }
+                }
+                continue
+            }
+            if plan.isMotion, !showsMotionSurfaces { continue }
+            if let index = reusable.firstIndex(where: {
+                $0.displayID == screen.asterDisplayID && $0.plan == plan && $0.frame == screen.frame
+            }) {
+                rebuilt.append(reusable.remove(at: index))
+            } else if let surface = makeSurface(for: screen, plan: plan) {
+                rebuilt.append(surface)
+            }
         }
 
-        guard activeItemKind == .image, let activeItemURL else { return }
+        retiring.append(contentsOf: reusable)
+        retireSurfaces(retiring)
+        surfaces = rebuilt
+        synchronizeDesktopState()
+        if let firstError { throw firstError }
+    }
+
+    /// Returns nil when the picture cannot be read. Leaving the system wallpaper
+    /// visible is better than covering the desktop with an empty window.
+    private func makeSurface(for screen: NSScreen, plan: DesktopSurfacePlan) -> (any DesktopSurface)? {
+        if plan.presentation == .videoWindow {
+            return DesktopVideoWindow(
+                screen: screen,
+                plan: plan,
+                fillMode: fillMode,
+                muted: muted,
+                playbackRate: Float(playbackSpeed.rawValue),
+                dimming: motionDimming
+            ) { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.recoverMotionWallpaper()
+                }
+            }
+        }
+        return DesktopImageWindow(
+            screen: screen,
+            plan: plan,
+            fillMode: fillMode,
+            dimming: plan.isMotion ? motionDimming : 0
+        )
+    }
+
+    private func updateActiveWallpaperScaling() {
+        surfaces.forEach { $0.setFillMode(fillMode) }
+        guard isEnabled, hasDesktopAssignments || lockScreenURL != nil else { return }
         do {
-            try applyImage(activeItemURL)
+            // The system wallpaper holds either this display's still or the
+            // Lock Screen still; both follow the Fit setting.
+            for screen in NSScreen.screens {
+                if let plan = plan(for: screen), plan.presentation == .systemWallpaper {
+                    try setSystemWallpaper(plan.url, for: screen)
+                } else if let lockScreenURL {
+                    try setSystemWallpaper(lockScreenURL, for: screen)
+                }
+            }
             statusMessage = "Wallpaper set to \(fillMode.rawValue.lowercased())"
         } catch {
             statusMessage = error.localizedDescription
         }
     }
 
-    private func applyVideo(_ url: URL) {
-        beginPlaybackActivityIfNeeded()
-        rebuildVideoWindows(url: url)
-        screenObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.rebuildVideoWindows(url: url) }
-        }
-        observePlaybackLifecycle(url: url)
-        isAnimating = true
-        startSmartPauseMonitoring()
-        evaluateSmartPausePolicy()
-    }
-
-    private func rebuildVideoWindows(url: URL) {
-        retireCurrentVideoWindows()
-        videoWindows = NSScreen.screens.map {
-            DesktopVideoWindow(
-                screen: $0,
-                url: url,
-                fillMode: fillMode,
-                muted: muted
-            ) { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.recoverMotionWallpaper(url: url)
-                }
-            }
-        }
-        applySmartPausePlaybackState()
-    }
-
-    private func observePlaybackLifecycle(url: URL) {
+    private func observePlaybackLifecycle() {
         let resumeNames: [Notification.Name] = [
             NSApplication.didBecomeActiveNotification,
             NSApplication.didUnhideNotification
@@ -822,7 +1266,7 @@ final class WallpaperController {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.resumeMotionWallpaper(url: url)
+                    self?.resumeMotionWallpaper()
                 }
             }
         }
@@ -840,29 +1284,23 @@ final class WallpaperController {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.resumeMotionWallpaper(url: url)
+                    self?.resumeMotionWallpaper()
                 }
             }
         }
     }
 
-    private func resumeMotionWallpaper(url: URL) {
+    private func resumeMotionWallpaper() {
         guard isAnimating else { return }
         evaluateSmartPausePolicy(samplesSystemLoad: false)
-        guard !videoWindows.isEmpty else {
-            if !allDisplaysArePaused {
-                recoverMotionWallpaper(url: url)
-            }
-            return
-        }
         applySmartPausePlaybackState()
     }
 
-    private func recoverMotionWallpaper(url: URL) {
+    private func recoverMotionWallpaper() {
         guard isAnimating, !allDisplaysArePaused, !isRecoveringPlayback else { return }
         isRecoveringPlayback = true
         statusMessage = "Recovering motion wallpaper…"
-        rebuildVideoWindows(url: url)
+        try? rebuildDesktop(appliesSystemWallpaper: false)
         statusMessage = "Motion wallpaper is playing"
 
         playbackRecoveryTask?.cancel()
@@ -921,7 +1359,9 @@ final class WallpaperController {
             isHighSystemLoad: isHighSystemLoad,
             systemLoadPercent: currentSystemLoadPercent,
             pauseInLowPowerMode: pauseMotionInLowPowerMode,
-            isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
+            isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            pauseOnBattery: pauseMotionOnBattery,
+            isOnBatteryPower: pauseMotionOnBattery && Self.isOnBatteryPower
         )
         setSmartPauseState(
             globalReason: newGlobalReason,
@@ -945,7 +1385,7 @@ final class WallpaperController {
 
         if let globalReason {
             statusMessage = "Motion wallpaper paused — \(globalReason.message)"
-        } else if !fullScreenApplications.isEmpty {
+        } else if coveredMotionDisplayCount > 0 {
             statusMessage = fullScreenPauseMessage.replacingOccurrences(of: "Paused", with: "Motion wallpaper paused")
         } else {
             statusMessage = "Motion wallpaper is playing"
@@ -955,16 +1395,21 @@ final class WallpaperController {
     private func applySmartPausePlaybackState() {
         var hasPlayingDisplay = false
         let coveredDisplayIDs = Set(fullScreenDisplayApplications.keys)
-        for videoWindow in videoWindows {
+        for surface in surfaces {
+            guard surface.isMotion else {
+                // A still has nothing to pause; it only has to stay in place.
+                surface.ensureVisibleAndPlaying()
+                continue
+            }
             let shouldPause = Self.shouldPauseDisplay(
-                videoWindow.displayID,
+                surface.displayID,
                 hasGlobalPause: globalMotionPauseReason != nil,
                 coveredDisplayIDs: coveredDisplayIDs
             )
             if shouldPause {
-                videoWindow.pausePlayback()
+                surface.pausePlayback()
             } else {
-                videoWindow.ensureVisibleAndPlaying()
+                surface.ensureVisibleAndPlaying()
                 hasPlayingDisplay = true
             }
         }
@@ -976,21 +1421,22 @@ final class WallpaperController {
     }
 
     private var allDisplaysArePaused: Bool {
-        guard !videoWindows.isEmpty else { return globalMotionPauseReason != nil }
-        return globalMotionPauseReason != nil || videoWindows.allSatisfy {
+        let motion = motionSurfaces
+        guard !motion.isEmpty else { return globalMotionPauseReason != nil }
+        return globalMotionPauseReason != nil || motion.allSatisfy {
             fullScreenDisplayApplications[$0.displayID] != nil
         }
     }
 
     private var fullScreenPauseMessage: String {
-        let pausedCount = fullScreenDisplayApplications.count
-        let displayCount = max(videoWindows.count, NSScreen.screens.count)
-        let names = Set(fullScreenDisplayApplications.values)
+        let motion = motionSurfaces
+        let pausedSurfaces = motion.filter { fullScreenDisplayApplications[$0.displayID] != nil }
+        let names = Set(pausedSurfaces.compactMap { fullScreenDisplayApplications[$0.displayID] })
         let reason = names.count == 1
             ? "\(names.first ?? "An app") is full screen"
             : "full-screen apps cover those desktops"
-        if pausedCount < displayCount {
-            return "Paused on \(pausedCount) of \(displayCount) displays — \(reason)"
+        if pausedSurfaces.count < motion.count {
+            return "Paused on \(pausedSurfaces.count) of \(motion.count) displays — \(reason)"
         }
         return "Paused — \(reason)"
     }
@@ -1032,7 +1478,9 @@ final class WallpaperController {
         isHighSystemLoad: Bool,
         systemLoadPercent: Int?,
         pauseInLowPowerMode: Bool,
-        isLowPowerModeEnabled: Bool
+        isLowPowerModeEnabled: Bool,
+        pauseOnBattery: Bool = false,
+        isOnBatteryPower: Bool = false
     ) -> MotionPauseReason? {
         if pauseForFullScreenApps, let fullScreenApplicationName {
             return .fullScreenApplication(fullScreenApplicationName)
@@ -1040,10 +1488,21 @@ final class WallpaperController {
         if pauseInLowPowerMode, isLowPowerModeEnabled {
             return .lowPowerMode
         }
+        if pauseOnBattery, isOnBatteryPower {
+            return .batteryPower
+        }
         if pauseForHighSystemLoad, isHighSystemLoad {
             return .highSystemLoad(systemLoadPercent ?? 100)
         }
         return nil
+    }
+
+    private static var isOnBatteryPower: Bool {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let source = IOPSGetProvidingPowerSourceType(blob)?.takeUnretainedValue() else {
+            return false
+        }
+        return (source as String) == kIOPSBatteryPowerValue
     }
 
     private static func fullScreenApplicationsByDisplay() -> [CGDirectDisplayID: String] {
@@ -1170,16 +1629,14 @@ final class WallpaperController {
         return coveredArea / displayArea >= minimumCoverage
     }
 
-    private func retireCurrentVideoWindows() {
-        guard !videoWindows.isEmpty else { return }
-        let retiring = videoWindows
+    private func retireSurfaces(_ retiring: [any DesktopSurface]) {
+        guard !retiring.isEmpty else { return }
         let retiringIDs = Set(retiring.map(\.id))
-        videoWindows.removeAll()
         retiring.forEach { $0.beginRetirement() }
-        retiringVideoWindows.append(contentsOf: retiring)
+        retiringSurfaces.append(contentsOf: retiring)
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(1))
-            self?.retiringVideoWindows.removeAll { retiringIDs.contains($0.id) }
+            self?.retiringSurfaces.removeAll { retiringIDs.contains($0.id) }
         }
     }
 
@@ -1188,10 +1645,57 @@ final class WallpaperController {
     }
 }
 
+/// A window Aster draws on the desktop, just above the system wallpaper.
 @MainActor
-private final class DesktopVideoWindow: Identifiable {
+private protocol DesktopSurface: AnyObject {
+    var id: UUID { get }
+    var displayID: CGDirectDisplayID { get }
+    var plan: DesktopSurfacePlan { get }
+    /// The display frame this surface was built for.
+    var frame: CGRect { get }
+    func pausePlayback()
+    func ensureVisibleAndPlaying()
+    func beginRetirement()
+    func setFillMode(_ fillMode: WallpaperController.FillMode)
+    func setDimming(_ dimming: Double)
+    func setMuted(_ muted: Bool)
+    func setPlaybackRate(_ rate: Float)
+}
+
+extension DesktopSurface {
+    var isMotion: Bool { plan.isMotion }
+}
+
+private extension NSWindow {
+    /// A borderless window that sits one level above the system wallpaper and
+    /// below Finder's desktop icons, on every Space.
+    static func asterDesktopWindow(for screen: NSScreen, contentView: NSView) -> NSWindow {
+        let window = NSWindow(
+            contentRect: screen.frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.contentView = contentView
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.ignoresMouseEvents = !DesktopInteractionSupport.needsAsterHitTarget
+        window.isOpaque = true
+        window.backgroundColor = .black
+        window.animationBehavior = .none
+        window.setFrame(screen.frame, display: true)
+        window.orderBack(nil)
+        return window
+    }
+}
+
+@MainActor
+private final class DesktopVideoWindow: DesktopSurface {
     let id = UUID()
     let displayID: CGDirectDisplayID
+    let plan: DesktopSurfacePlan
+    let frame: CGRect
     let player: AVQueuePlayer
     private let looper: AVPlayerLooper
     private let asset: AVURLAsset
@@ -1212,21 +1716,25 @@ private final class DesktopVideoWindow: Identifiable {
 
     init(
         screen: NSScreen,
-        url: URL,
+        plan: DesktopSurfacePlan,
         fillMode: WallpaperController.FillMode,
         muted: Bool,
+        playbackRate: Float,
+        dimming: Double,
         onPlaybackFailure: @escaping () -> Void
     ) {
         self.onPlaybackFailure = onPlaybackFailure
-        displayID = (screen.deviceDescription[
-            NSDeviceDescriptionKey("NSScreenNumber")
-        ] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) } ?? 0
-        asset = AVURLAsset(url: url)
+        self.plan = plan
+        frame = screen.frame
+        displayID = screen.asterDisplayID
+        asset = AVURLAsset(url: plan.url)
         let templateItem = AVPlayerItem(asset: asset)
         player = AVQueuePlayer()
         player.actionAtItemEnd = .advance
         player.automaticallyWaitsToMinimizeStalling = false
         player.isMuted = muted
+        // play() starts at defaultRate, so every resume and recovery path keeps the speed.
+        player.defaultRate = playbackRate
         looper = AVPlayerLooper(player: player, templateItem: templateItem)
 
         videoView = VideoDesktopView(
@@ -1239,24 +1747,9 @@ private final class DesktopVideoWindow: Identifiable {
         case .fit: .resizeAspect
         case .stretch: .resize
         }
+        videoView.setDimming(dimming)
 
-        window = NSWindow(
-            contentRect: screen.frame,
-            styleMask: .borderless,
-            backing: .buffered,
-            defer: false,
-            screen: screen
-        )
-        window.contentView = videoView
-        // One level above the system wallpaper, while remaining below Finder's desktop icons.
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        window.ignoresMouseEvents = !DesktopInteractionSupport.needsAsterHitTarget
-        window.isOpaque = true
-        window.backgroundColor = .black
-        window.animationBehavior = .none
-        window.setFrame(screen.frame, display: true)
-        window.orderBack(nil)
+        window = .asterDesktopWindow(for: screen, contentView: videoView)
 
         // A looper queues the next copy before the current one ends. The stall
         // observer handles uncommon decoder interruptions without leaving the
@@ -1448,6 +1941,22 @@ private final class DesktopVideoWindow: Identifiable {
         player.pause()
     }
 
+    func setMuted(_ muted: Bool) {
+        guard !isRetiring else { return }
+        player.isMuted = muted
+    }
+
+    func setPlaybackRate(_ rate: Float) {
+        guard !isRetiring else { return }
+        player.defaultRate = rate
+        if player.rate != 0 { player.rate = rate }
+    }
+
+    func setDimming(_ dimming: Double) {
+        guard !isRetiring else { return }
+        videoView.setDimming(dimming)
+    }
+
     func setFillMode(_ fillMode: WallpaperController.FillMode) {
         guard !isRetiring else { return }
         videoView.playerLayer.videoGravity = switch fillMode {
@@ -1455,6 +1964,167 @@ private final class DesktopVideoWindow: Identifiable {
         case .fit: .resizeAspect
         case .stretch: .resize
         }
+    }
+}
+
+/// Draws a GIF, or a still that cannot be the system wallpaper, on the desktop.
+@MainActor
+private final class DesktopImageWindow: DesktopSurface {
+    let id = UUID()
+    let displayID: CGDirectDisplayID
+    let plan: DesktopSurfacePlan
+    let frame: CGRect
+    private let window: NSWindow
+    private let imageView: DesktopImageView
+    private var isRetiring = false
+
+    init?(
+        screen: NSScreen,
+        plan: DesktopSurfacePlan,
+        fillMode: WallpaperController.FillMode,
+        dimming: Double
+    ) {
+        guard let image = NSImage(contentsOf: plan.url), image.isValid else { return nil }
+        self.plan = plan
+        frame = screen.frame
+        displayID = screen.asterDisplayID
+        imageView = DesktopImageView(
+            frame: NSRect(origin: .zero, size: screen.frame.size),
+            image: image,
+            animates: plan.isMotion,
+            fillMode: fillMode,
+            handlesDesktopClicks: DesktopInteractionSupport.needsAsterHitTarget
+        )
+        imageView.setDimming(dimming)
+        window = .asterDesktopWindow(for: screen, contentView: imageView)
+    }
+
+    func pausePlayback() {
+        guard !isRetiring else { return }
+        imageView.setAnimating(false)
+    }
+
+    func ensureVisibleAndPlaying() {
+        guard !isRetiring else { return }
+        if !window.isVisible { window.orderBack(nil) }
+        imageView.setAnimating(true)
+    }
+
+    func beginRetirement() {
+        guard !isRetiring else { return }
+        isRetiring = true
+        imageView.setAnimating(false)
+        window.orderOut(nil)
+    }
+
+    func setFillMode(_ fillMode: WallpaperController.FillMode) {
+        guard !isRetiring else { return }
+        imageView.fillMode = fillMode
+    }
+
+    func setDimming(_ dimming: Double) {
+        guard !isRetiring, plan.isMotion else { return }
+        imageView.setDimming(dimming)
+    }
+
+    func setMuted(_ muted: Bool) {}
+    func setPlaybackRate(_ rate: Float) {}
+}
+
+final class DesktopImageView: NSView {
+    var fillMode: WallpaperController.FillMode {
+        didSet { needsLayout = true }
+    }
+    private let imageView = NSImageView()
+    private let dimView = NSView()
+    private let animates: Bool
+    private let handlesDesktopClicks: Bool
+    /// The picture's shape in pixels, which is what decides how it is fitted.
+    private let pixelSize: CGSize
+
+    init(
+        frame frameRect: NSRect,
+        image: NSImage,
+        animates: Bool,
+        fillMode: WallpaperController.FillMode,
+        handlesDesktopClicks: Bool
+    ) {
+        self.fillMode = fillMode
+        self.animates = animates
+        self.handlesDesktopClicks = handlesDesktopClicks
+        if let representation = image.representations.first,
+           representation.pixelsWide > 0, representation.pixelsHigh > 0 {
+            pixelSize = CGSize(width: representation.pixelsWide, height: representation.pixelsHigh)
+        } else {
+            pixelSize = image.size
+        }
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        layer?.masksToBounds = true
+
+        imageView.image = image
+        imageView.imageFrameStyle = .none
+        // The frame below already has the right shape, so the image fills it exactly.
+        imageView.imageScaling = .scaleAxesIndependently
+        imageView.animates = animates
+        addSubview(imageView)
+
+        dimView.wantsLayer = true
+        dimView.layer?.backgroundColor = NSColor.black.cgColor
+        dimView.alphaValue = 0
+        addSubview(dimView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setAnimating(_ isAnimating: Bool) {
+        guard animates, imageView.animates != isAnimating else { return }
+        imageView.animates = isAnimating
+    }
+
+    func setDimming(_ dimming: Double) {
+        dimView.alphaValue = CGFloat(min(max(dimming, 0), 1))
+    }
+
+    override func layout() {
+        super.layout()
+        dimView.frame = bounds
+        imageView.frame = Self.imageFrame(for: pixelSize, in: bounds, fillMode: fillMode)
+    }
+
+    static func imageFrame(
+        for imageSize: CGSize,
+        in bounds: CGRect,
+        fillMode: WallpaperController.FillMode
+    ) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              bounds.width > 0, bounds.height > 0, fillMode != .stretch else { return bounds }
+        let widthScale = bounds.width / imageSize.width
+        let heightScale = bounds.height / imageSize.height
+        let scale = fillMode == .fill ? max(widthScale, heightScale) : min(widthScale, heightScale)
+        let size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        return CGRect(
+            x: bounds.midX - size.width / 2,
+            y: bounds.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    // Clicks belong to this view, not the image inside it.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        handlesDesktopClicks
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard handlesDesktopClicks, event.clickCount == 2 else { return }
+        DesktopInteractionSupport.revealDesktop()
     }
 }
 
@@ -1505,6 +2175,7 @@ private struct SystemCPULoadSampler {
 
 private final class VideoDesktopView: NSView {
     let playerLayer = AVPlayerLayer()
+    private let dimLayer = CALayer()
     private let handlesDesktopClicks: Bool
 
     init(frame frameRect: NSRect, handlesDesktopClicks: Bool) {
@@ -1513,6 +2184,15 @@ private final class VideoDesktopView: NSView {
         wantsLayer = true
         layer = playerLayer
         playerLayer.backgroundColor = NSColor.black.cgColor
+        dimLayer.backgroundColor = NSColor.black.cgColor
+        dimLayer.opacity = 0
+        dimLayer.frame = bounds
+        dimLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        playerLayer.addSublayer(dimLayer)
+    }
+
+    func setDimming(_ dimming: Double) {
+        dimLayer.opacity = Float(min(max(dimming, 0), 1))
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {

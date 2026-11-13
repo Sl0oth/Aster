@@ -88,7 +88,7 @@ struct OnboardingView: View {
             HStack(spacing: 9) {
                 Text("Aster")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color.asterDeepPurple)
+                    .foregroundStyle(Color.asterAccentDeep)
                 Text("BETA")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .tracking(1)
@@ -104,7 +104,7 @@ struct OnboardingView: View {
             HStack(spacing: 7) {
                 ForEach([Step.mission, .modules, .ready], id: \.rawValue) { item in
                     Capsule(style: .continuous)
-                        .fill(item.rawValue <= step.rawValue ? Color.asterPurple : Color.white.opacity(0.12))
+                        .fill(item.rawValue <= step.rawValue ? Color.asterAccent : Color.white.opacity(0.12))
                         .frame(width: item == step ? 26 : 7, height: 7)
                         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: step)
                 }
@@ -132,7 +132,7 @@ struct OnboardingView: View {
                         Image(systemName: item.symbol)
                             .font(.system(size: 13, weight: .medium))
                             .frame(width: 20)
-                            .foregroundStyle(item == step ? Color.asterPurple : .secondary)
+                            .foregroundStyle(item == step ? Color.asterAccent : .secondary)
                         Text(item.title)
                             .font(.system(size: 13, weight: .medium))
                         Spacer()
@@ -172,14 +172,14 @@ struct OnboardingView: View {
         VStack(spacing: 18) {
             ZStack {
                 Circle()
-                    .fill(Color.asterPurple.opacity(0.08))
+                    .fill(Color.asterAccent.opacity(0.08))
                     .frame(width: 92, height: 92)
                     .blur(radius: 18)
                     .scaleEffect(contentIsVisible ? 1.2 : 0.75)
 
                 Image(systemName: "asterisk")
                     .font(.system(size: 27, weight: .semibold))
-                    .foregroundStyle(Color.asterPurple)
+                    .foregroundStyle(Color.asterAccent)
                     .rotationEffect(.degrees(contentIsVisible && !reduceMotion ? 180 : 0))
             }
 
@@ -228,7 +228,7 @@ struct OnboardingView: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color(hex: 0xCBB8FF))
                     .frame(width: 34, height: 34)
-                    .background(Color.asterPurple.opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
+                    .background(Color.asterAccent.opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Aster is currently in beta")
                         .font(.system(size: 13, weight: .semibold))
@@ -239,8 +239,8 @@ struct OnboardingView: View {
             }
             .padding(.horizontal, 15)
             .frame(height: 58)
-            .background(Color.asterPurple.opacity(0.07), in: RoundedRectangle(cornerRadius: 15))
-            .overlay(RoundedRectangle(cornerRadius: 15).stroke(Color.asterPurple.opacity(0.18), lineWidth: 0.7))
+            .background(Color.asterAccent.opacity(0.07), in: RoundedRectangle(cornerRadius: 15))
+            .overlay(RoundedRectangle(cornerRadius: 15).stroke(Color.asterAccent.opacity(0.18), lineWidth: 0.7))
 
             Button("Choose your modules") {
                 advance(to: .modules)
@@ -298,16 +298,16 @@ struct OnboardingView: View {
         VStack(spacing: 28) {
             ZStack {
                 Circle()
-                    .fill(Color.asterPurple.opacity(0.08))
+                    .fill(Color.asterAccent.opacity(0.08))
                     .frame(width: 104, height: 104)
                     .blur(radius: 18)
                 Circle()
                     .fill(.ultraThinMaterial)
                     .frame(width: 64, height: 64)
-                    .overlay(Circle().stroke(Color.asterPurple.opacity(0.35), lineWidth: 0.8))
+                    .overlay(Circle().stroke(Color.asterAccent.opacity(0.35), lineWidth: 0.8))
                 Image(systemName: "checkmark")
                     .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(Color.asterPurple)
+                    .foregroundStyle(Color.asterAccent)
             }
 
             VStack(spacing: 9) {
@@ -423,10 +423,10 @@ private struct ModuleChoiceCard: View {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: module.symbol)
                     .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(isSelected ? .white : Color.asterPurple)
+                    .foregroundStyle(isSelected ? .white : Color.asterAccent)
                     .frame(width: 42, height: 42)
                     .background(
-                        isSelected ? Color.asterPurple : Color.asterPurple.opacity(0.12),
+                        isSelected ? Color.asterAccent : Color.asterAccent.opacity(0.12),
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                     )
 
@@ -443,17 +443,17 @@ private struct ModuleChoiceCard: View {
 
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(isSelected ? Color.asterPurple : Color.secondary.opacity(0.55))
+                    .foregroundStyle(isSelected ? Color.asterAccent : Color.secondary.opacity(0.55))
             }
             .padding(15)
             .frame(maxWidth: .infinity, minHeight: 82, alignment: .topLeading)
             .background(
-                isSelected ? Color.asterPurple.opacity(0.11) : Color.white.opacity(0.035),
+                isSelected ? Color.asterAccent.opacity(0.11) : Color.white.opacity(0.035),
                 in: RoundedRectangle(cornerRadius: 17, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .stroke(isSelected ? Color.asterPurple.opacity(0.5) : Color.white.opacity(0.07), lineWidth: 0.8)
+                    .stroke(isSelected ? Color.asterAccent.opacity(0.5) : Color.white.opacity(0.07), lineWidth: 0.8)
             }
             .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
         }
@@ -468,7 +468,7 @@ private struct OnboardingBackdrop: View {
             Rectangle().fill(.ultraThinMaterial)
             Color.black.opacity(0.16)
             RadialGradient(
-                colors: [Color.asterPurple.opacity(0.08), .clear],
+                colors: [Color.asterAccent.opacity(0.08), .clear],
                 center: .bottomTrailing,
                 startRadius: 20,
                 endRadius: 720
@@ -485,7 +485,7 @@ private struct OnboardingPrimaryButtonStyle: ButtonStyle {
             .foregroundStyle(.white)
             .padding(.horizontal, 15)
             .frame(height: 38)
-            .onboardingGlass(cornerRadius: 12, tint: Color.asterPurple.opacity(0.42))
+            .onboardingGlass(cornerRadius: 12, tint: Color.asterAccent.opacity(0.42))
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.82 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
